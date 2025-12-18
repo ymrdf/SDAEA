@@ -1,93 +1,143 @@
-# Survival-Driven Adaptive Evolution Architecture for Artificial General Intelligence
+# Survival-Driven Adaptive Evolution:
 
-## Abstract
+## A Self-Regulated, Embodied, Online Learning Architecture Toward Artificial General Intelligence
 
-Current approaches toward Artificial General Intelligence (AGI) are dominated by large-scale supervised, self-supervised, or reinforcement learning paradigms that rely heavily on externally defined objectives, offline training, and static inference-time models. Despite impressive performance, these systems exhibit fundamental limitations in grounding, autonomy, and continual adaptation. In this work, we propose a **Survival-Driven Adaptive Evolution Architecture (SDAEA)**, a conceptual and implementable training framework inspired by biological organisms. The framework emphasizes embodied interaction, internally generated learning signals, per-step online parameter updates, and survival pressure as the sole global constraint. Due to computational limitations, we do not present large-scale empirical results; instead, we provide a rigorous formulation, architectural design, and a reference implementation demonstrating feasibility under limited hardware. This work aims to reframe AGI training as an ongoing adaptive process rather than a static optimization problem.
+### Abstract
 
----
+Current Artificial General Intelligence (AGI) research is dominated by large-scale, offline-trained models that achieve impressive performance through statistical pattern learning on massive datasets. Despite their success, these systems exhibit fundamental limitations in physical grounding, autonomy, and continual learning. In this paper, we identify three core limitations of mainstream AGI training paradigms: (1) the Symbol Grounding Problem arising from disembodied learning, (2) the lack of intrinsic motivation and agency due to externally defined objectives, and (3) catastrophic forgetting caused by the strict separation between training and inference.
 
-## 1. Introduction
+To address these issues, we propose a **Survival-Driven Adaptive Evolution Architecture (SDAEA)**. Our approach integrates high-fidelity embodied simulation, a recurrent global workspace, and a novel homeostatic self-regulation mechanism in which the agent internally generates its own loss function and learning rate. Learning proceeds in an online, per-step manner, enabling continual adaptation on resource-constrained edge devices. We further introduce a death-driven negative replay mechanism, where catastrophic failure triggers counterfactual parameter updates under high learning rates, embedding survival pressure directly into the learning dynamics.
 
-Recent advances in large language models and foundation models have renewed optimism about the feasibility of AGI. However, most contemporary systems remain fundamentally _disembodied_, _externally motivated_, and _offline-trained_. They excel at interpolation within training distributions but struggle with long-horizon autonomy, causal reasoning grounded in physical interaction, and continual learning under resource constraints.
-
-We argue that these limitations are not incidental but structural, arising from dominant training paradigms that treat intelligence as large-scale function approximation. In contrast, biological intelligence emerges from persistent interaction with a hostile environment under survival pressure, continuous self-modification, and internal regulation of learning dynamics.
-
-This paper proposes an alternative training paradigm centered on survival-driven adaptation. Rather than optimizing for task-specific rewards, the agent learns to maintain its own viability in a physically grounded environment through internally generated loss signals and online parameter updates.
+We demonstrate a prototype implementation using a convolutional neural network agent trained in a Godot-based embodied environment. While not claiming immediate AGI capability, this work presents a concrete, end-to-end training paradigm that shifts optimization from reward maximization toward survival-oriented self-regulation, offering a scalable and biologically inspired path toward general intelligence.
 
 ---
 
-## 2. The Trinity of Limitations in Current AGI Paradigms
+### 1. Introduction
 
-### 2.1 Symbol Grounding Deficit
+Recent advances in large-scale deep learning have produced models with remarkable capabilities in language understanding, vision, and control. However, these successes largely stem from supervised or self-supervised learning on static datasets, optimized via externally defined objectives. As a result, current systems remain fundamentally **disembodied, passive, and brittle**, lacking the adaptive robustness and autonomy observed in biological intelligence.
 
-Most modern AI systems acquire knowledge indirectly through symbolic or perceptual datasets curated by humans. This results in _observer-centric_ representations lacking direct coupling between perception, action, and physical consequence. Without embodied interaction, core physical concepts such as force, damage, or scarcity remain statistical abstractions rather than experiential knowledge.
+Biological agents do not learn from curated datasets nor optimize explicit reward functions provided by an external designer. Instead, intelligence emerges from continuous interaction with a hostile physical world, driven by survival pressure, homeostatic regulation, and embodied experience. This observation motivates a reconsideration of the dominant AGI training paradigm.
 
-### 2.2 Absence of Intrinsic Motivation and Agency
-
-Existing models are driven exclusively by externally specified objectives, whether cross-entropy loss, reward functions, or preference models. Such systems do not choose their goals, cannot regulate their own learning dynamics, and lack mechanisms for endogenous exploration or intention formation.
-
-### 2.3 Inability to Perform Continual Online Learning
-
-Training and inference are typically separated both temporally and computationally. Once deployed, models are frozen due to the prohibitive cost of backpropagation, replay buffers, and large batch training. This leads to catastrophic forgetting or complete inability to adapt in real time, especially on edge devices such as robots.
+In this work, we argue that achieving AGI requires a shift from **reward-driven, batch-trained models** toward **survival-driven, self-regulating agents** capable of online continual learning in embodied environments.
 
 ---
 
-## 3. Problem Formulation
+### 2. The Trinity of Limitations in Current AGI Paradigms
 
-We model an agent as a parameterized function ( f\_\theta ) embedded in an environment ( E ) governed by fixed physical rules. At each time step ( t ), the agent receives multimodal sensory input ( o_t ) and produces a high-dimensional output ( y_t ). This output is partitioned into:
+We identify three fundamental limitations shared by most contemporary AGI approaches.
 
-1. **Action signals** ( a_t ), affecting the environment.
-2. **Internal signals** ( s_t ), reused as part of the next input.
-3. **Learning control signals**, modulating loss magnitude and learning rate.
+#### 2.1 Lack of Symbol Grounding
 
-The environment provides no explicit reward. Instead, a terminal failure state ("death") is defined when internal health variables reach zero.
+Most modern models learn from text, images, or videos collected by humans. Such data provides only an **observer’s perspective** of the world. The agent does not act within the environment, nor does it experience the causal consequences of its actions.
 
----
+As a result, learned representations lack grounding in physical reality. Concepts such as gravity, friction, danger, or affordance are encoded only as statistical correlations, not as lived experience. This leads to systems with encyclopedic knowledge but limited common sense.
 
-## 4. Survival-Driven Adaptive Evolution Architecture
+#### 2.2 Absence of Intrinsic Motivation and Agency
 
-### 4.1 High-Fidelity Embodied Simulation
+Current models are optimized entirely through externally defined loss functions. They do not possess intrinsic drives, goals, or survival instincts. Consequently, they function as passive function approximators rather than autonomous agents.
 
-The agent operates within a physics-consistent simulated world and is equipped with a virtual body featuring visual, auditory, tactile, and nociceptive sensors. Sensory data are streamed directly into the model without semantic preprocessing.
+Without internally generated objectives, such systems cannot independently explore, plan long-term strategies, or develop intentional behavior. Any apparent goal-directedness is inherited from human-designed reward structures.
 
-### 4.2 Recurrent Global Workspace via Output Feedback
+#### 2.3 Inability to Perform Continual Online Learning
 
-Unlike feedforward inference pipelines, the model feeds its previous high-dimensional output back into its next input. Only a small subset of outputs is mapped to motor actions; the majority constitute an internal _thought stream_, enabling iterative reasoning and state accumulation.
+Modern deep learning strictly separates training and inference. Once deployed, models typically cannot update their parameters due to computational constraints and the risk of catastrophic forgetting.
 
-### 4.3 Homeostatic Self-Regulation
-
-The agent internally generates its own loss value and learning rate from designated output regions. These signals control the magnitude and direction of parameter updates, emulating biological regulation of synaptic plasticity. Learning thus becomes an endogenous process rather than an externally imposed optimization.
-
-### 4.4 Death-Driven Negative Replay
-
-Death serves as the only hard constraint. When the agent enters a terminal state, parameters are reverted to a cached pre-death state, and a high-magnitude _negative loss_ update is applied. This counterfactual adjustment encodes aversive experiences without requiring dense reward shaping.
+This limitation is especially problematic for embodied agents such as robots, which must adapt continuously to non-stationary environments. Unlike biological organisms, deployed models cannot accumulate experience through ongoing interaction.
 
 ---
 
-## 5. Online Per-Step Learning and Resource Efficiency
+### 3. Proposed Architecture: Survival-Driven Adaptive Evolution
 
-The proposed framework abandons batch training and replay buffers in favor of per-step updates. Gradients are computed and released immediately, leading to significantly reduced memory consumption. This design enables training directly on resource-constrained devices and simplifies distributed learning across multiple agents.
+To overcome these limitations, we propose a unified training and deployment framework grounded in survival-driven learning.
+
+#### 3.1 High-Fidelity Embodied Simulation
+
+The agent is situated within a physically grounded simulated world that obeys realistic dynamics. Rather than serving as a data generator, the environment functions as a **life world** in which the agent must survive.
+
+The agent is equipped with a virtual body featuring:
+
+- Visual sensors (binocular vision),
+- Tactile and damage feedback,
+- Internal physiological signals such as health and hunger.
+
+All sensory inputs are fed directly into the model, without handcrafted abstractions.
+
+#### 3.2 Recurrent Global Workspace
+
+The agent does not operate under a simple feedforward input–output mapping. Instead, the model’s output at each timestep is recursively fed back into its next input.
+
+Only a small subset of the output determines physical actions. The majority of the output represents an internal **thought stream**, functioning as a recurrent global workspace. This enables iterative reasoning, memory accumulation, and internal state evolution analogous to System 2 cognition.
+
+#### 3.3 Homeostatic Self-Regulation
+
+The most critical innovation is the removal of externally defined rewards. The environment provides no explicit reward signal.
+
+Instead:
+
+- A designated region of the model’s own output is interpreted as an **internal loss signal**.
+- Another region determines the **learning rate** used for parameter updates.
+
+The model therefore learns to regulate its own plasticity, simulating biological homeostasis. Parameter updates occur **after every interaction step**, enabling true online learning.
+
+#### 3.4 Death-Driven Negative Replay
+
+In the absence of explicit rewards, survival becomes the sole objective.
+
+If the agent’s health reaches zero, a death event is triggered:
+
+1. The system restores a cached parameter state from earlier in the episode.
+2. A counterfactual update is applied using the **negative of the internal loss**, with a significantly increased learning rate.
+3. This embeds an aversive memory of the behavioral trajectory leading to death.
+
+Death thus functions as the only hard negative signal, analogous to evolutionary pressure.
 
 ---
 
-## 6. Reference Implementation
+### 4. Resource-Efficient Online Learning
 
-We provide a reference implementation using a MobileNetV3 backbone integrated with a Godot-based embodied environment. The model processes binocular vision and health signals, outputs a high-dimensional tensor reused as both internal state and action logits, and performs parameter updates at every interaction step. While the scale is limited, the implementation demonstrates architectural feasibility and validates memory-efficiency claims.
+Unlike batch-based reinforcement learning, our method performs **per-step gradient updates** without replay buffers or large batch sizes.
 
----
+This yields several advantages:
 
-## 7. Limitations
+- Significantly reduced VRAM usage,
+- Immediate release of intermediate activations,
+- Feasibility of training directly on edge devices and robots.
 
-This work does not present large-scale empirical validation. The emergence of high-level cognition, intentionality, or self-awareness is not empirically demonstrated and remains speculative. Stability, convergence properties, and safety considerations of self-modulated learning remain open problems.
-
----
-
-## 8. Future Work
-
-Future directions include scaling to richer environments, integrating world-model learning, formal analysis of stability, and comparative studies against standard reinforcement learning baselines. Hardware-efficient neuromorphic or event-driven implementations are also promising avenues.
+Furthermore, the architecture naturally supports distributed training by running multiple embodied agents in parallel environments.
 
 ---
 
-## 9. Conclusion
+### 5. Prototype Implementation
 
-We propose a shift from task-centric optimization toward survival-driven continual adaptation as a foundation for AGI. By grounding learning in embodied experience, internal regulation, and persistent online plasticity, the proposed architecture offers a principled alternative to prevailing paradigms. We hope this work stimulates further exploration into biologically inspired training methodologies for general intelligence.
+We implement a proof-of-concept agent using:
+
+- A MobileNetV3 backbone as a lightweight visual encoder,
+- A Godot-based embodied simulation environment,
+- A single unified output tensor that encodes actions, internal state, loss, and learning rate.
+
+The agent receives binocular RGB images and health signals, concatenated with its previous output. Actions are sampled from spatially localized output regions, while internal regulation signals are extracted from designated output patches.
+
+Training proceeds continuously, with parameter caching and death-triggered counterfactual updates.
+
+---
+
+### 6. Discussion
+
+This work does not claim to achieve AGI. Instead, it proposes a **training paradigm shift**: from reward maximization to survival-driven self-regulation.
+
+Key open questions include:
+
+- Stability of self-generated loss landscapes,
+- Emergence of structured representations,
+- Long-term memory and abstraction,
+- Scalability to more complex environments.
+
+Nevertheless, the proposed framework aligns more closely with biological learning principles than current mainstream approaches.
+
+---
+
+### 7. Conclusion
+
+We presented a survival-driven, embodied, and self-regulating learning architecture aimed at addressing fundamental limitations of current AGI paradigms. By unifying training and inference, removing external rewards, and embedding survival pressure directly into the learning process, our approach offers a concrete path toward autonomous, adaptive intelligence.
+
+We believe that intelligence does not emerge from larger datasets or models alone, but from **continuous struggle within a world that can kill you**.
