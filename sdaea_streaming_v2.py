@@ -61,6 +61,7 @@ class Config:
     death_cost: float = 2.0
     shaping: float = 1.0
     memory_steps: float = 20.0
+    depth: int = 2
     width: int = 96
     image_size: int = 48
     eye_height: int = 300
@@ -73,7 +74,7 @@ class Config:
 
 
 def validate(c: Config) -> None:
-    for name in ("threads", "max_steps", "hold_steps", "hp_unit", "width",
+    for name in ("threads", "max_steps", "hold_steps", "hp_unit", "depth", "width",
                  "image_size", "eye_height", "eye_width", "actor_lr", "critic_lr",
                  "actor_kappa", "critic_kappa", "memory_steps"):
         if getattr(c, name) <= 0:
@@ -154,7 +155,7 @@ class SensoryMemory:
 class VisualNetwork(nn.Module):
     """Owns its entire visual-to-output path; no detached learned world encoder."""
 
-    def __init__(self, n_actions: int, outputs: int, width: int):
+    def __init__(self, n_actions: int, outputs: int, width: int, depth: int = 2):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(6, 16, 5, stride=2, padding=2), nn.LeakyReLU(0.1),
@@ -164,12 +165,11 @@ class VisualNetwork(nn.Module):
         # Raw spatial RGB average/max paths retain small bright objects while the
         # learned representation is immature. Every RGB channel is treated equally.
         inputs = 24 * 4 * 6 + 4 * 6 * 6 * 8 + 3 + n_actions
-        self.hidden = nn.Sequential(
-            nn.Linear(inputs, width), nn.LayerNorm(width, elementwise_affine=False),
-            nn.LeakyReLU(0.1),
-            nn.Linear(width, width), nn.LayerNorm(width, elementwise_affine=False),
-            nn.LeakyReLU(0.1),
-        )
+        layers = []
+        for index in range(depth):
+            layers.extend([nn.Linear(inputs if index == 0 else width, width),
+                           nn.LayerNorm(width, elementwise_affine=False), nn.LeakyReLU(0.1)])
+        self.hidden = nn.Sequential(*layers)
         self.output = nn.Linear(width, outputs)
         with torch.no_grad():
             for module in self.modules():
@@ -225,8 +225,8 @@ class BoundedTrace:
 class Learner:
     def __init__(self, c: Config, n_actions: int, device: torch.device):
         self.c, self.n_actions, self.device = c, n_actions, device
-        self.actor = VisualNetwork(n_actions, n_actions, c.width).to(device)
-        self.critic = VisualNetwork(n_actions, 1, c.width).to(device)
+        self.actor = VisualNetwork(n_actions, n_actions, c.width, c.depth).to(device)
+        self.critic = VisualNetwork(n_actions, 1, c.width, c.depth).to(device)
         self.actor_update = BoundedTrace(self.actor.parameters(), c.actor_lr, c.actor_kappa)
         self.critic_update = BoundedTrace(self.critic.parameters(), c.critic_lr, c.critic_kappa)
         self.trace_discount = 0.0 if c.trace_steps == 0 else math.exp(-1 / c.trace_steps)
@@ -300,6 +300,8 @@ class Learner:
                     "hold_steps", "memory_steps", "image_size", "exploration"):
             if payload["config"][key] != getattr(self.c, key):
                 raise ValueError(f"Checkpoint {key}={payload['config'][key]} differs from CLI")
+        if payload["config"].get("depth", 2) != self.c.depth:
+            raise ValueError("Checkpoint depth differs from CLI")
         self.actor.load_state_dict(payload["actor"])
         self.critic.load_state_dict(payload["critic"])
         self.clear()

@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Compare 48px, 96px, and 96px with wider hidden layers in the block environment."""
+import argparse
+import csv
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import statistics
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent
+
+def write_json(path, value):
+    temp = path.with_suffix('.tmp')
+    temp.write_text(json.dumps(value, indent=2, ensure_ascii=False))
+    temp.replace(path)
+
+def source_hashes(project):
+    paths = [ROOT / 'sdaea_streaming_v2.py', ROOT / 'sdaea_online_validate.py', Path(__file__)]
+    paths += [p for p in project.rglob('*') if p.is_file() and
+              not any(part.startswith('.') for part in p.relative_to(project).parts) and
+              p.suffix in ('.gd', '.tscn', '.godot', '.cs', '.csproj', '.glb')]
+    return {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(paths)}
+
+def summarize(directory):
+    s = json.loads((directory / 'summary.json').read_text())
+    with (directory / 'metrics.csv').open() as f:
+        rows = list(csv.DictReader(f))
+    live = [r for r in rows if r['terminal'] == '0']
+    return dict(**s, positive_hp_events=sum(int(r['positive_hp_events']) for r in rows),
+                negative_hp_events=sum(int(r['negative_hp_events']) for r in rows),
+                mean_entropy=statistics.mean(float(r['entropy']) for r in rows),
+                mean_max_probability=statistics.mean(float(r['max_probability']) for r in rows),
+                identical_image_fraction=sum(float(r['image_change']) == 0 for r in live)/max(1,len(live)))
+
+def check_frozen(reference, checkpoint):
+    import torch
+    before = torch.load(reference, map_location='cpu', weights_only=True)
+    after = torch.load(checkpoint, map_location='cpu', weights_only=True)
+    for model in ('actor','critic'):
+        if before[model].keys() != after[model].keys() or any(
+            not torch.equal(t, after[model][k]) for k,t in before[model].items()):
+            raise RuntimeError(f'Frozen evaluation changed {model} weights: {checkpoint}')
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--suite-dir', type=Path, required=True)
+    p.add_argument('--godot', type=Path, required=True)
+    p.add_argument('--project', type=Path, default=ROOT.parent/'EnvolutionRobot')
+    p.add_argument('--port', type=int, default=11028)
+    a = p.parse_args()
+    suite, project, godot = a.suite_dir.resolve(), a.project.resolve(), a.godot.resolve()
+    if not godot.is_file() or not (project/'project.godot').is_file():
+        p.error('Godot executable and project.godot must exist')
+    suite.mkdir(parents=True, exist_ok=True)
+    if any(suite.iterdir()):
+        p.error('Use a new empty suite directory')
+    (suite/'logs').mkdir()
+    hashes = source_hashes(project)
+    write_json(suite/'source_hashes.json',hashes)
+    variants = [('48_w96', 48, 96), ('96_w96', 96, 96), ('96_w256', 96, 256)]
+    jobs = []
+    for variant, image_size, width in variants:
+        common = dict(variant=variant, image_size=image_size, width=width)
+        jobs.append(dict(name=f'{variant}_train_seed7', group='train', seed=7, steps=100000, **common))
+        for seed in (17, 27, 37):
+            for group in ('initial', 'trained'):
+                jobs.append(dict(name=f'{variant}_{group}_seed{seed}', group=group, seed=seed, steps=20000, **common))
+    state = dict(status='running', started_at=time.time(),
+                 total_environment_steps=sum(j['steps'] for j in jobs), completed=[], jobs=jobs,
+                 notes='Block scene; resolution-only and hidden-width interventions. Same learning settings. Fresh training seed7 per variant, frozen initial/trained controls on seeds17/27/37. World initialization is not guaranteed paired; single training seed is exploratory. CNN channels and RGB bypass unchanged.')
+    write_json(suite/'status.json',state)
+    write_json(suite/'plan.json',dict(jobs=jobs,device='cuda',hold_steps=4,port=a.port,project=str(project),
+                                    notes=state['notes']))
+    trainer = game = None
+    def stop(_sig,_frame):
+        raise KeyboardInterrupt('Suite interrupted')
+    signal.signal(signal.SIGTERM,stop)
+    signal.signal(signal.SIGINT,stop)
+    try:
+        for job in jobs:
+            if source_hashes(project) != hashes:
+                raise RuntimeError('Training or environment source changed; stop to preserve comparability')
+            state.update(current_job=job['name'],job_started_at=time.time())
+            write_json(suite/'status.json',state)
+            run_dir = suite/job['name']
+            command = [sys.executable,'-u',str(ROOT/'sdaea_streaming_v2.py'),'--run-dir',str(run_dir),
+                       '--seed',str(job['seed']),'--max-steps',str(job['steps']),'--device','cuda',
+                       '--port',str(a.port), '--image-size',str(job['image_size']), '--width',str(job['width'])]
+            reference = None
+            if job['group'] != 'train':
+                command += ['--no-learn']
+                if job['group'] == 'random':
+                    command += ['--random-actions']
+                else:
+                    reference = suite/f"{job['variant']}_train_seed7"/('initial.pt' if job['group']=='initial' else 'latest.pt')
+                    command += ['--warm-start',str(reference)]
+            trainer_log = suite/'logs'/f"{job['name']}.python.log"
+            game_log = suite/'logs'/f"{job['name']}.godot.log"
+            print('Starting',job['name'],flush=True)
+            with trainer_log.open('w') as out, game_log.open('w') as gout:
+                trainer = subprocess.Popen(command,cwd=ROOT,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
+                deadline=time.monotonic()+90
+                while 'waiting for remote GODOT connection' not in trainer_log.read_text():
+                    if trainer.poll() is not None or time.monotonic()>deadline:
+                        raise RuntimeError(f"Trainer did not open listener: {trainer_log}")
+                    time.sleep(.25)
+                game = subprocess.Popen([str(godot),'--path',str(project),f'--port={a.port}',
+                                         f"--env_seed={job['seed']}"],stdout=gout,stderr=subprocess.STDOUT,start_new_session=True)
+                last_progress=time.monotonic()
+                previous_size=-1
+                while trainer.poll() is None:
+                    time.sleep(2)
+                    metrics=run_dir/'metrics.csv'
+                    size=metrics.stat().st_size if metrics.exists() else 0
+                    if size != previous_size:
+                        previous_size=size
+                        last_progress=time.monotonic()
+                    if game.poll() is not None:
+                        # Allow the trainer to finish saving after its normal close handshake.
+                        try: trainer.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            raise RuntimeError(f'Godot exited before trainer: {game_log}')
+                    if time.monotonic()-last_progress>600:
+                        raise RuntimeError(f'No metrics progress for ten minutes: {trainer_log}')
+                if trainer.returncode != 0:
+                    raise RuntimeError(f'Trainer exited {trainer.returncode}: {trainer_log}')
+                game.wait(timeout=30)
+                if game.returncode != 0:
+                    raise RuntimeError(f'Godot exited {game.returncode}: {game_log}')
+            result=summarize(run_dir)
+            if result['steps'] != job['steps']:
+                raise RuntimeError(f"Run stopped early at {result['steps']}: {run_dir}")
+            if job['group'] != 'train':
+                if result['updates'] != 0:
+                    raise RuntimeError(f'Evaluation performed learning updates: {run_dir}')
+                check_frozen(reference,run_dir/'initial.pt')
+                check_frozen(reference,run_dir/'latest.pt')
+            result.update(group=job['group'],seed=job['seed'],name=job['name'],variant=job['variant'], image_size=job['image_size'], width=job['width'])
+            state['completed'].append(result)
+            write_json(suite/'status.json',state)
+            trainer=game=None
+        groups={}
+        for variant, _, _ in variants:
+          for group in ('initial','trained'):
+            runs=[r for r in state['completed'] if r['group']==group and r['variant']==variant]
+            steps=sum(r['steps'] for r in runs)
+            lives=[v for r in runs for v in r['completed_lifetimes']]
+            groups[variant+'_'+group]=dict(runs=len(runs),steps=steps,deaths=sum(r['deaths'] for r in runs),
+                deaths_per_10000_steps=10000*sum(r['deaths'] for r in runs)/steps,
+                median_completed_lifetime=statistics.median(lives) if lives else None,
+                censored_lifetimes=[r['censored_lifetime'] for r in runs],
+                mean_hp=sum(r['mean_hp']*r['steps'] for r in runs)/steps,
+                positive_hp_events=sum(r['positive_hp_events'] for r in runs),
+                negative_hp_events=sum(r['negative_hp_events'] for r in runs))
+        write_json(suite/'comparison.json',dict(groups=groups,runs=state['completed'],notes=state['notes']))
+        state.update(status='complete',finished_at=time.time(),current_job=None)
+        write_json(suite/'status.json',state)
+        print('Comparison complete:',suite/'comparison.json',flush=True)
+    except BaseException as exc:
+        state.update(status='interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',error=str(exc),finished_at=time.time())
+        write_json(suite/'status.json',state)
+        raise
+    finally:
+        if trainer is not None and trainer.poll() is None:
+            trainer.send_signal(signal.SIGINT)
+            try: trainer.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                trainer.kill(); trainer.wait()
+        if game is not None and game.poll() is None:
+            game.terminate()
+            try: game.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                game.kill(); game.wait()
+
+if __name__=='__main__':
+    main()
