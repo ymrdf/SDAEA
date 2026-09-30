@@ -61,6 +61,23 @@ class SearchChecks(unittest.TestCase):
             l.learn(s, 0, 0., nxt, 4 if terminal else nxt.elapsed, terminal)
         self.assertEqual(l.context, [])
 
+    def test_gray_ablation_masks_current_and_historical_pixels(self):
+        from run_survival_search import PolicyMemory
+        from test_sdaea_streaming_v2 import observation
+        c=replace(self.c, eye_height=24, eye_width=32)
+        a=PolicyMemory(c,torch.device('cpu'),2,vision_ablation='gray')
+        b=PolicyMemory(c,torch.device('cpu'),2,vision_ablation='gray')
+        for step in range(3):
+            left=a.state(observation(5,True),0,4)
+            right=b.state(observation(5,False),0,4)
+            torch.testing.assert_close(left.image,right.image)
+            torch.testing.assert_close(left.history,right.history)
+            torch.testing.assert_close(left.body,right.body)
+            self.assertTrue((left.image==.5).all())
+            self.assertTrue((left.history==.5).all())
+            self.assertEqual(left.elapsed,4)
+        self.assertFalse(torch.equal(a.ema,b.ema))  # Hidden raw history never reaches policy.
+
     def test_invalid_insertion_layer_rejected(self):
         with self.assertRaises(ValueError):
             validate(replace(self.c, recurrent_layer=3))

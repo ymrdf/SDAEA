@@ -1,0 +1,33 @@
+{
+  "status": "complete",
+  "source_checkpoint": "/home/gao/learn/SDAEA/runs/competition_20260929_small/96_w256_d3/latest.pt",
+  "trials": [
+    {
+      "seed": 71,
+      "variants": "/home/gao/learn/SDAEA/experiments/survival_search/validation03_seed71.json",
+      "run_dir": "/home/gao/learn/SDAEA/runs/survival_validation03_seed71_20260930",
+      "status": "complete",
+      "finished_at": 1790747919.0607471
+    },
+    {
+      "seed": 73,
+      "variants": "/home/gao/learn/SDAEA/experiments/survival_search/validation03_seed73.json",
+      "run_dir": "/home/gao/learn/SDAEA/runs/survival_validation03_seed73_20260930",
+      "status": "complete",
+      "finished_at": 1790751432.8475485
+    },
+    {
+      "seed": 79,
+      "variants": "/home/gao/learn/SDAEA/experiments/survival_search/validation03_seed79.json",
+      "run_dir": "/home/gao/learn/SDAEA/runs/survival_validation03_seed79_20260930",
+      "status": "complete",
+      "finished_at": 1790755263.9331198
+    }
+  ],
+  "port": 11178,
+  "green_blocks": 60,
+  "red_blocks": 200,
+  "verify_visuals": false,
+  "notes": "Original difficulty. 18 robots per shared world: 2 copies per candidate/condition (normal, cleared recurrent memory, gray current+historical vision), 2 old frozen, 2 random, 2 stationary. Three new world seeds, no learning, same trained weights not independent training seeds. Full 50000-step lives are right-censored.",
+  "queue_pid": 1138258
+}

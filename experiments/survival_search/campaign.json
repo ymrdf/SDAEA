@@ -1,10 +1,10 @@
 {
-  "status": "active",
-  "round": 3,
-  "active_run": "/home/gao/learn/SDAEA/runs/survival_search_round03_20260930",
-  "launcher_pid": 1029694,
-  "launcher_log": "/home/gao/learn/SDAEA/runs/survival_search_round03_20260930_launcher.log",
-  "started_at": 1790734166.9585066,
+  "status": "paused_by_user",
+  "round": 4,
+  "active_run": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930",
+  "launcher_pid": 1281920,
+  "launcher_log": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930_launcher.log",
+  "started_at": 1790756676.965422,
   "completed_rounds": [
     {
       "round": 1,
@@ -26,6 +26,19 @@
       "run": "/home/gao/learn/SDAEA/runs/survival_search_round02_20260930",
       "report": "/home/gao/learn/SDAEA/runs/survival_search_round02_20260930/REPORT.md",
       "conclusion": "Lowest-death policy avoided acceleration 97.1% and acquired only 1 green block; no long-term survival."
+    },
+    {
+      "round": 3,
+      "status": "curriculum_promising_not_validated",
+      "run": "/home/gao/learn/SDAEA/runs/survival_search_round03_20260930",
+      "report": "/home/gao/learn/SDAEA/runs/survival_search_round03_20260930/REPORT.md",
+      "next": "validation03_original_difficulty_memory_and_vision_ablations"
+    },
+    {
+      "stage": "validation03",
+      "status": "complete_not_achieved",
+      "report": "/home/gao/learn/SDAEA/experiments/survival_search/VALIDATION03_REPORT.md",
+      "conclusion": "Curriculum advantage failed at original difficulty; visual/memory ablations did not consistently worsen performance."
     }
   ],
   "command": [
@@ -33,26 +46,32 @@
     "-u",
     "/home/gao/learn/SDAEA/run_survival_search.py",
     "--variants",
-    "/home/gao/learn/SDAEA/experiments/survival_search/round03.json",
+    "/home/gao/learn/SDAEA/experiments/survival_search/round04.json",
     "--run-dir",
-    "/home/gao/learn/SDAEA/runs/survival_search_round03_20260930",
+    "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930",
     "--source-checkpoint",
     "/home/gao/learn/SDAEA/runs/competition_20260929_small/96_w256_d3/latest.pt",
     "--fast",
+    "--batch-eval",
     "--initial-eval-steps",
     "5000",
     "--train-steps",
-    "50000",
+    "300000",
+    "--train-chunk-steps",
+    "100000",
+    "--intermediate-eval-steps",
+    "20000",
     "--eval-steps",
     "50000",
     "--port",
-    "11168",
+    "11198",
     "--seed",
-    "61",
-    "--green-blocks",
-    "120",
-    "--red-blocks",
-    "80"
+    "83"
   ],
-  "success_criteria": "See README.md; held-out shared-arena validation required. Continue experimenting until criteria met or user stops."
+  "success_criteria": "See README.md; held-out shared-arena validation required. Continue experimenting until criteria met or user stops.",
+  "long_training_plan": "Treat 50k as screening; promising policies should receive 300k-1M cumulative training steps with staged evaluations, after original-difficulty validation.",
+  "training_budget": 300000,
+  "shared_total_steps": 395000,
+  "paused_at": 1790757056.8750677,
+  "pause_note": "User requested pause. Processes already exited after Godot disconnect at shared step 6349; all 16 interrupted.pt checkpoints present. No restart attempted."
 }

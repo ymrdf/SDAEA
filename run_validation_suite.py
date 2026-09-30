@@ -1,4 +1,5 @@
 """Run several fresh shared worlds; all competing policies are frozen together."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,10 @@ def write(path, value):
 
 
 def main():
+    global SUITE
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--suite',type=Path,default=SUITE)
+    SUITE=parser.parse_args().suite
     suite = json.loads(SUITE.read_text())
     campaign = json.loads(CAMPAIGN.read_text())
     suite['queue_pid'] = os.getpid()
@@ -33,7 +38,10 @@ def main():
                    '--source-checkpoint', suite['source_checkpoint'], '--fast',
                    '--initial-eval-steps', '0', '--train-steps', '0',
                    '--eval-steps', '50000', '--seed', str(trial['seed']),
-                   '--port', '11128', '--verify-visuals']
+                   '--port', str(suite.get('port',11128)),
+                   '--green-blocks', str(suite.get('green_blocks',60)),
+                   '--red-blocks', str(suite.get('red_blocks',200))]
+        if suite.get('verify_visuals',True): command.append('--verify-visuals')
         campaign.update(status='validation_running', active_run=str(run),
                         launcher_log=str(log), command=command, validation_suite=str(SUITE),
                         queue_pid=os.getpid())

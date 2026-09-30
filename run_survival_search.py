@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 import numpy as np
 import torch
-from sdaea_streaming_v2 import Config, Learner, SensoryMemory, body_signal, motor_table
+from sdaea_streaming_v2 import Config, Learner, SensoryMemory, State, body_signal, motor_table
 from sdaea_online_validate import ActionSpec, extract_hp, seed_everything
 
 VARIANTS = []
@@ -15,6 +15,22 @@ FROZEN = set()
 RANDOM = set()
 STATIONARY = set()
 ROOT=Path(__file__).resolve().parent
+
+class PolicyMemory(SensoryMemory):
+    """Ablate both current pixels and the visual EMA; body input is unchanged."""
+    def __init__(self, *args, vision_ablation=None):
+        super().__init__(*args)
+        if vision_ablation not in (None, 'gray'):
+            raise ValueError('Unknown vision ablation')
+        self.vision_ablation = vision_ablation
+
+    def state(self, observation, previous_action, elapsed):
+        state = super().state(observation, previous_action, elapsed)
+        if self.vision_ablation == 'gray':
+            return State(torch.full_like(state.image, .5), torch.full_like(state.history, .5),
+                         state.body, state.elapsed)
+        return state
+
 
 def write(path,data):
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(data,indent=2));tmp.replace(path)
@@ -37,6 +53,23 @@ def ensure_live(env, obs):
             if i not in dead and extract_hp(obs[i],'hp')!=before[i]:
                 raise RuntimeError('Selective reset changed live HP')
     raise RuntimeError('Repeated dead respawn observations')
+
+def phase_plan(a):
+    result=[]
+    if a.initial_eval_steps:
+        result.append(['initial',a.initial_eval_steps])
+    if a.train_chunk_steps and a.train_steps:
+        remaining=a.train_steps;index=0
+        while remaining:
+            index+=1;steps=min(a.train_chunk_steps,remaining);remaining-=steps
+            result.append([f'train_{index}',steps])
+            if remaining and a.intermediate_eval_steps:
+                result.append([f'eval_{index}',a.intermediate_eval_steps])
+    elif a.train_steps:
+        result.append(['train',a.train_steps])
+    result.append(['trained',a.eval_steps])
+    return result
+
 
 def worker(a):
     from godot_rl.core.godot_env import GodotEnv
@@ -64,9 +97,9 @@ def worker(a):
         from sdaea_streaming_v2 import validate
         validate(c)
         l=Learner(c,len(table),torch.device('cuda'))
-        learners.append(l);configs.append(c);memories.append(SensoryMemory(c,torch.device('cuda'),len(table)))
+        learners.append(l);configs.append(c);memories.append(PolicyMemory(c,torch.device('cuda'),len(table),vision_ablation=variant.get('vision_ablation')))
         if variant.get('checkpoint'):
-            l.load(Path(variant['checkpoint']), specs, allow_objective_change=variant.get('transfer_objective',False))
+            l.load(Path(variant['checkpoint']), specs, allow_objective_change=variant.get('transfer_objective',False), allow_optimizer_change=variant.get('transfer_optimizer',False))
         elif i not in RANDOM | STATIONARY:
             # Transfer matching feedforward paths; extra CNN/memory parameters are new.
             for name in ('actor','critic'):
@@ -92,7 +125,7 @@ def worker(a):
                 assert current[eye].tobytes()==bytes.fromhex(old[eye]), 'Raw and hex pixels differ'
     states=[m.state(o,None,0) for m,o in zip(memories,obs)]
     plan=dict(labels=LABELS,configs=[asdict(c) for c in configs],
-              phases=[[name,steps] for name,steps in [('initial',a.initial_eval_steps),('train',a.train_steps),('trained',a.eval_steps)] if steps>0],
+              phases=phase_plan(a),
               source_checkpoint=str(a.source_checkpoint),shared_scene=True,fast=a.fast,
               parameter_counts={label:sum(p.numel() for model in (l.actor,l.critic) for p in model.parameters()) for label,l in zip(LABELS,learners)},
               variants=VARIANTS, seed=a.seed, green_blocks=a.green_blocks, red_blocks=a.red_blocks,
@@ -108,8 +141,9 @@ def worker(a):
       with (a.run_dir/'metrics.csv').open('w') as f:
         w=csv.DictWriter(f,fields);w.writeheader()
         for phase,length in plan['phases']:
+          is_training=phase=='train' or phase.startswith('train_')
           for i,l in enumerate(learners):
-            l.c.no_learn=phase!='train' or i in FROZEN;l.clear()
+            l.c.no_learn=not is_training or i in FROZEN;l.clear()
           # Equal body energy at the start of every phase, including frozen evaluation.
           frame=getattr(env,'physics_frame',None)
           assert all(env.call('restart_competition_body'))
@@ -118,6 +152,10 @@ def worker(a):
           assert all(abs(extract_hp(o,'hp')-6.)<1e-6 for o in obs)
           for i in range(N):
             memories[i].clear();states[i]=memories[i].state(obs[i],None,0)
+          frozen_batch=None
+          if a.batch_eval and not is_training:
+            from frozen_policy_batch import FrozenPolicyBatch
+            frozen_batch=FrozenPolicyBatch(learners,VARIANTS,[i for i in range(N) if i not in RANDOM | STATIONARY])
           lives=[0]*N;lifetimes=[[] for _ in range(N)];first_death=[None]*N
           frozen=[{k:v.detach().clone() for k,v in l.actor.state_dict().items()} for l in learners]
           frozen_critics=[{k:v.detach().clone() for k,v in l.critic.state_dict().items()} for l in learners]
@@ -126,10 +164,11 @@ def worker(a):
           phase_started=time.perf_counter();phase_bytes=getattr(env,'bytes_received',0);phase_frames=getattr(env,'rgb_frames',0)
           stage_times=dict(action=0.,environment=0.,learning_and_logging=0.)
           elapsed_phase=0
-          write(a.run_dir/'status.json',dict(status='running',phase=phase,step=total,phase_step=0,total_steps=a.initial_eval_steps+a.train_steps+a.eval_steps,updated_at=time.time()))
+          write(a.run_dir/'status.json',dict(status='running',phase=phase,step=total,phase_step=0,total_steps=sum(length for _,length in plan['phases']),updated_at=time.time()))
           while elapsed_phase<length and not stop:
             stage_start=time.perf_counter()
             actions=[]
+            batch_probs={} if frozen_batch is None else frozen_batch.probabilities(states)
             for i,l in enumerate(learners):
               if VARIANTS[i].get('clear_memory'):
                 if not l.c.no_learn: raise ValueError('Memory ablation is evaluation-only')
@@ -137,8 +176,11 @@ def worker(a):
               if i in STATIONARY:
                 actions.append(table.index([1 if s.learned else s.fixed_value for s in specs]))
               elif i in RANDOM: actions.append(int(rngs[i].integers(len(table))))
+              elif frozen_batch is not None:
+                probs=batch_probs[i]
+                actions.append(int(rngs[i].choice(len(table),p=probs)))
               else:
-                with torch.no_grad(): probs=l.distribution(states[i]).probs[0].cpu().numpy().astype(float)
+                probs=l.prepare_action(states[i]).probs[0].detach().cpu().numpy().astype(float)
                 actions.append(int(rngs[i].choice(len(table),p=probs/probs.sum())))
             stage_times['action']+=time.perf_counter()-stage_start
             stage_start=time.perf_counter()
@@ -171,7 +213,10 @@ def worker(a):
               if a.verify_visuals and nxt is not None:
                 visual_changes[i]+=int(not torch.equal(states[i].image,nxt.image))
               update_metrics={}
-              if i not in RANDOM | STATIONARY:
+              if frozen_batch is not None and i in batch_probs:
+                probs=batch_probs[i]
+                update_metrics=dict(entropy=float(-(probs*np.log(probs)).sum()),max_probability=float(probs.max()))
+              elif i not in RANDOM | STATIONARY:
                 update_metrics=l.learn(states[i],actions[i],values[i],nxt,elapsed,term[i])
               lives[i]+=elapsed
               if term[i]:
@@ -184,6 +229,7 @@ def worker(a):
               states[i]=nxt
             stage_times['learning_and_logging']+=time.perf_counter()-stage_start
             if any(term):
+              if frozen_batch is not None: frozen_batch.clear_indices([i for i,t in enumerate(term) if t])
               reset_obs=ensure_live(env,reset_indices(env,[i for i,t in enumerate(term) if t]))
               reset_checks+=1
               for i in range(N):
@@ -199,13 +245,13 @@ def worker(a):
                   states[i].elapsed=interval
               obs=reset_obs
             if total//500 != (total-elapsed)//500:
-              f.flush();write(a.run_dir/'status.json',dict(status='running',phase=phase,step=total,phase_step=elapsed_phase,total_steps=a.initial_eval_steps+a.train_steps+a.eval_steps,updated_at=time.time(),phase_seconds=time.perf_counter()-phase_started,shared_steps_per_second=elapsed_phase/(time.perf_counter()-phase_started),cuda_allocated_mb=torch.cuda.memory_allocated()/2**20,cuda_peak_mb=torch.cuda.max_memory_allocated()/2**20))
+              f.flush();write(a.run_dir/'status.json',dict(status='running',phase=phase,step=total,phase_step=elapsed_phase,total_steps=sum(length for _,length in plan['phases']),updated_at=time.time(),phase_seconds=time.perf_counter()-phase_started,shared_steps_per_second=elapsed_phase/(time.perf_counter()-phase_started),cuda_allocated_mb=torch.cuda.memory_allocated()/2**20,cuda_peak_mb=torch.cuda.max_memory_allocated()/2**20))
               print(f'phase={phase} shared_step={total}',flush=True)
             if total//10000 != (total-elapsed)//10000:
               for i,l in enumerate(learners): l.save(a.run_dir/LABELS[i]/'latest.pt',specs,total)
           if stop: raise KeyboardInterrupt('Stopped')
           for i,l in enumerate(learners):
-            if phase!='train' or i in FROZEN:
+            if not is_training or i in FROZEN:
               assert all(torch.equal(v,l.actor.state_dict()[k]) for k,v in frozen[i].items())
               assert all(torch.equal(v,l.critic.state_dict()[k]) for k,v in frozen_critics[i].items())
             l.save(a.run_dir/LABELS[i]/f'{phase}.pt',specs,total)
@@ -229,7 +275,7 @@ def worker(a):
     finally: env.close()
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--variants',type=Path,required=True);p.add_argument('--seed',type=int,default=29);p.add_argument('--green-blocks',type=int,default=60);p.add_argument('--red-blocks',type=int,default=200);p.add_argument('--run-dir',type=Path,required=True);p.add_argument('--port',type=int,default=11088);p.add_argument('--train-steps',type=int,default=50000);p.add_argument('--eval-steps',type=int,default=50000);p.add_argument('--worker',action='store_true');p.add_argument('--fast',action='store_true');p.add_argument('--uncapped',action='store_true');p.add_argument('--source-checkpoint',type=Path,required=True);p.add_argument('--initial-eval-steps',type=int,default=10000);p.add_argument('--verify-visuals',action='store_true');p.add_argument('--eye-width',type=int,default=160);p.add_argument('--eye-height',type=int,default=150);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--batch-eval',action='store_true');p.add_argument('--train-chunk-steps',type=int,default=0);p.add_argument('--intermediate-eval-steps',type=int,default=20000);p.add_argument('--variants',type=Path,required=True);p.add_argument('--seed',type=int,default=29);p.add_argument('--green-blocks',type=int,default=60);p.add_argument('--red-blocks',type=int,default=200);p.add_argument('--run-dir',type=Path,required=True);p.add_argument('--port',type=int,default=11088);p.add_argument('--train-steps',type=int,default=50000);p.add_argument('--eval-steps',type=int,default=50000);p.add_argument('--worker',action='store_true');p.add_argument('--fast',action='store_true');p.add_argument('--uncapped',action='store_true');p.add_argument('--source-checkpoint',type=Path,required=True);p.add_argument('--initial-eval-steps',type=int,default=10000);p.add_argument('--verify-visuals',action='store_true');p.add_argument('--eye-width',type=int,default=160);p.add_argument('--eye-height',type=int,default=150);a=p.parse_args()
     global VARIANTS, LABELS, N, FROZEN, RANDOM, STATIONARY
     VARIANTS=json.loads(a.variants.read_text())
     LABELS=[v['label'] for v in VARIANTS];N=len(LABELS)
@@ -240,6 +286,7 @@ def main():
     STATIONARY={i for i,v in enumerate(VARIANTS) if v.get('role')=='stationary'}
     if not RANDOM or not FROZEN or min(a.green_blocks,a.red_blocks)<0:
         p.error('Require controls and nonnegative block counts')
+    if min(a.train_chunk_steps,a.intermediate_eval_steps)<0:p.error('Chunk budgets must be nonnegative')
     if min(a.eye_width,a.eye_height)<36: p.error('Eye dimensions must be >=36')
     if not a.fast: p.error('Capacity survival requires --fast for controlled body resets')
     if min(a.train_steps,a.initial_eval_steps)<0 or a.eval_steps<=0: p.error('Require nonnegative training/initial budgets and positive final evaluation')
@@ -249,7 +296,7 @@ def main():
     scene=ROOT.parent/'EnvolutionRobot'/'scenes/training_scene'/f'search_{a.run_dir.name}.tscn'
     scene.write_text('[gd_scene load_steps=3 format=3]\n[ext_resource type="PackedScene" path="res://scenes/training_scene/training_scene.tscn" id="1"]\n[ext_resource type="Script" path="res://scenes/training_scene/competition.gd" id="2"]\n[node name="Competition" instance=ExtResource("1")]\nscript = ExtResource("2")\n[node name="PlayingArea" parent="." index="2"]\n'+f'number_of_robots_to_spawn = {N}\npolicy_labels = Array[String]({json.dumps(LABELS)})\nnumber_of_green_blocks_to_spawn = {a.green_blocks}\nnumber_of_red_blocks_to_spawn = {a.red_blocks}\nmin_green_blocks = {a.green_blocks}\nmin_red_blocks = {a.red_blocks}\n')
     shutil.copy2(a.variants,a.run_dir/'variants.json')
-    sources=[ROOT/'run_survival_search.py',ROOT/'grow_policy.py',ROOT/'sdaea_streaming_v2.py',ROOT/'sdaea_online_validate.py',ROOT/'fast_godot_env.py']
+    sources=[ROOT/'run_survival_search.py',ROOT/'frozen_policy_batch.py',ROOT/'grow_policy.py',ROOT/'sdaea_streaming_v2.py',ROOT/'sdaea_online_validate.py',ROOT/'fast_godot_env.py']
     sources += [p for p in (ROOT.parent/'EnvolutionRobot').rglob('*')
                 if p.is_file() and p.suffix in ('.gd','.tscn','.godot')
                 and not any(part.startswith('.') for part in p.relative_to(ROOT.parent).parts)]

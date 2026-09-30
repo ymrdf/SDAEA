@@ -51,6 +51,9 @@ class Config:
     hold_steps: int = 4
     gamma: float = 0.999
     trace_steps: float = 300.0  # e-fold time of lambda in env steps, before discount.
+    optimizer: str = "bounded"  # Optional Adam comparison; no eligibility traces.
+    adam_grad_clip: float = 1.0
+    adam_td_clip: float = 5.0
     actor_lr: float = 0.1  # upper bound; ObGD sets the effective step size each update.
     critic_lr: float = 0.5
     actor_kappa: float = 3.0
@@ -86,6 +89,12 @@ def validate(c: Config) -> None:
                  "actor_kappa", "critic_kappa", "memory_steps"):
         if getattr(c, name) <= 0:
             raise ValueError(f"{name} must be positive")
+    if c.optimizer not in ("bounded", "adam"):
+        raise ValueError("Unknown optimizer")
+    if c.optimizer == "adam" and (c.trace_steps != 0 or not 0 < c.actor_lr <= .01
+                                  or not 0 < c.critic_lr <= .01
+                                  or c.adam_grad_clip <= 0 or c.adam_td_clip <= 0):
+        raise ValueError("Adam requires trace_steps=0, explicit small rates, positive clipping")
     if c.recurrent_size < 0 or c.recurrent_tau <= 0 or c.bptt_steps < 1:
         raise ValueError("Require recurrent_size>=0, recurrent_tau>0, bptt_steps>=1")
     if not 0 <= c.recurrent_layer < c.depth or c.cnn_extra < 0:
@@ -237,7 +246,7 @@ class DecayingMemory(nn.Module):
             previous = x.new_zeros(x.shape[0], self.size)
         tau = (self.log_tau + self.initial_log_tau).clamp(
             math.log(1.0), math.log(10000.0)).exp()
-        return previous * torch.exp(-float(elapsed) / tau)
+        return previous * torch.exp(-elapsed / tau)
 
     def forward(self, x, previous=None, elapsed=0):
         faded = self.decay(x, previous, elapsed)
@@ -334,6 +343,35 @@ class BoundedTrace:
             t.zero_()
 
 
+class AdamUpdate:
+    """TD-weighted gradient ascent, with clipped TD and gradient norm; no traces."""
+    def __init__(self, parameters, lr, grad_clip, td_clip):
+        self.parameters = list(parameters)
+        self.traces = []
+        self.lr, self.grad_clip, self.td_clip = lr, grad_clip, td_clip
+        self.optimizer = torch.optim.Adam(self.parameters, lr=lr, foreach=True)
+
+    @torch.no_grad()
+    def step(self, gradients, delta, decay):
+        if not math.isfinite(delta):
+            raise FloatingPointError("Non-finite TD error")
+        advantage = max(-self.td_clip, min(self.td_clip, delta))
+        before = [p.detach().clone() for p in self.parameters]
+        self.optimizer.zero_grad(set_to_none=True)
+        for p, g in zip(self.parameters, gradients):
+            p.grad = g.detach().mul(-advantage)
+        torch.nn.utils.clip_grad_norm_(self.parameters, self.grad_clip,
+                                      error_if_nonfinite=True, foreach=True)
+        self.optimizer.step()
+        differences = torch._foreach_sub(self.parameters, before)
+        update = torch.stack(torch._foreach_norm(differences, 1)).sum().item()
+        return {"lr": self.lr, "trace_l1": 0.0, "update_l1": update}
+
+    def clear(self):
+        # Episodes reset memory, not the optimizer's accumulated moments.
+        self.optimizer.zero_grad(set_to_none=True)
+
+
 class Learner:
     def __init__(self, c: Config, n_actions: int, device: torch.device):
         self.c, self.n_actions, self.device = c, n_actions, device
@@ -345,8 +383,13 @@ class Learner:
         self.actor, self.critic = network(n_actions), network(1)
         self.context = []
         self.anchors = {"actor": None, "critic": None}
-        self.actor_update = BoundedTrace(self.actor.parameters(), c.actor_lr, c.actor_kappa)
-        self.critic_update = BoundedTrace(self.critic.parameters(), c.critic_lr, c.critic_kappa)
+        self.pending_actor = None
+        if c.optimizer == "adam":
+            self.actor_update = AdamUpdate(self.actor.parameters(), c.actor_lr, c.adam_grad_clip, c.adam_td_clip)
+            self.critic_update = AdamUpdate(self.critic.parameters(), c.critic_lr, c.adam_grad_clip, c.adam_td_clip)
+        else:
+            self.actor_update = BoundedTrace(self.actor.parameters(), c.actor_lr, c.actor_kappa)
+            self.critic_update = BoundedTrace(self.critic.parameters(), c.critic_lr, c.critic_kappa)
         self.trace_discount = 0.0 if c.trace_steps == 0 else math.exp(-1 / c.trace_steps)
         self.previous_elapsed = None
 
@@ -370,6 +413,14 @@ class Learner:
         logits, _, _ = self.evaluate("actor", s)
         return self.policy(logits)
 
+    def prepare_action(self, state):
+        # Reuse this exact pre-action actor graph for the subsequent update.
+        # No parameter update may occur between this call and learn(state,...).
+        with torch.set_grad_enabled(not self.c.no_learn):
+            result = self.evaluate("actor", state)
+            self.pending_actor = None if self.c.no_learn else (state, result)
+            return self.policy(result[0])
+
     def policy(self, logits):
         probs = torch.softmax(logits, -1)
         probs = (1 - self.c.exploration) * probs + self.c.exploration / self.n_actions
@@ -390,7 +441,11 @@ class Learner:
         discount = self.c.gamma ** elapsed
         with torch.set_grad_enabled(not self.c.no_learn):
             critic_output, critic_h, critic_first = self.evaluate("critic", state)
-            logits, actor_h, actor_first = self.evaluate("actor", state)
+            if self.pending_actor is not None and self.pending_actor[0] is state:
+                logits, actor_h, actor_first = self.pending_actor[1]
+            else:
+                logits, actor_h, actor_first = self.evaluate("actor", state)
+            self.pending_actor = None
             value = critic_output.squeeze()
             dist = self.policy(logits)
             with torch.no_grad():
@@ -446,6 +501,7 @@ class Learner:
             self.anchors = {"actor": actor_first.detach(), "critic": critic_first.detach()}
 
     def clear(self):
+        self.pending_actor = None
         self.context.clear()
         self.anchors = {"actor": None, "critic": None}
         self.actor_update.clear()
@@ -457,9 +513,11 @@ class Learner:
                            "recurrent_architecture": "first_fc_v1" if self.c.recurrent_size else None,
                            "specs": [asdict(s) for s in specs],
                            "actor": self.actor.state_dict(),
-                           "critic": self.critic.state_dict()}, path)
+                           "critic": self.critic.state_dict(),
+                           "optimizers": {name: getattr(self, name + "_update").optimizer.state_dict()
+                                          for name in ("actor", "critic")} if self.c.optimizer == "adam" else None}, path)
 
-    def load(self, path: Path, specs, allow_objective_change: bool = False):
+    def load(self, path: Path, specs, allow_objective_change: bool = False, allow_optimizer_change: bool = False):
         payload = torch.load(path, map_location=self.device, weights_only=True)
         if payload.get("version") != 2 or payload["specs"] != [asdict(s) for s in specs]:
             raise ValueError("Checkpoint version/action space mismatch (v1 weights are incompatible)")
@@ -478,8 +536,17 @@ class Learner:
                 raise ValueError(f"Checkpoint {key} differs from CLI")
         if self.c.recurrent_size and payload.get("recurrent_architecture") != "first_fc_v1":
             raise ValueError("Checkpoint recurrent architecture differs: expected first_fc_v1")
+        source_optimizer = payload["config"].get("optimizer", "bounded")
+        if source_optimizer != self.c.optimizer and not allow_optimizer_change:
+            raise ValueError("Checkpoint optimizer differs; request explicit optimizer transfer")
         self.actor.load_state_dict(payload["actor"])
         self.critic.load_state_dict(payload["critic"])
+        if self.c.optimizer == "adam" and not allow_optimizer_change and payload.get("optimizers"):
+            for name in ("actor", "critic"):
+                updater = getattr(self, name + "_update")
+                updater.optimizer.load_state_dict(payload["optimizers"][name])
+                for group in updater.optimizer.param_groups:
+                    group["lr"] = getattr(self.c, name + "_lr")
         self.clear()
 
 
