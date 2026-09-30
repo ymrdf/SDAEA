@@ -197,8 +197,29 @@ def observation_to_tensor(
         raise KeyError(
             f"Missing eye observation(s) {missing}; available keys: {list(observation.keys())}"
         )
-    left = decode_eye(observation[left_eye_key], expected_height, expected_width, left_eye_key)
-    right = decode_eye(observation[right_eye_key], expected_height, expected_width, right_eye_key)
+    left_value = _unwrap_singleton(observation[left_eye_key])
+    right_value = _unwrap_singleton(observation[right_eye_key])
+    if (torch.is_tensor(left_value) and torch.is_tensor(right_value)
+            and left_value.device.type == "cuda" and right_value.device.type == "cuda"):
+        def gpu_eye(value: torch.Tensor) -> torch.Tensor:
+            if value.ndim != 3 or tuple(value.shape[:2]) != (expected_height, expected_width):
+                raise ValueError(
+                    f"GPU eye tensor has shape {tuple(value.shape)}; expected "
+                    f"({expected_height}, {expected_width}, 4)."
+                )
+            if value.shape[-1] not in (3, 4) or value.dtype != torch.uint8:
+                raise ValueError("GPU eye tensors must be uint8 HxWx3 or HxWx4")
+            return value[..., :3].permute(2, 0, 1).to(dtype=torch.float32).div_(255.0)
+
+        eyes = torch.cat((gpu_eye(left_value), gpu_eye(right_value)), dim=0).unsqueeze(0)
+        eyes = eyes.to(device=device)
+        if eyes.shape[-2:] != (image_size, image_size):
+            eyes = F.interpolate(
+                eyes, size=(image_size, image_size), mode="bilinear", align_corners=False)
+        return eyes.contiguous()
+
+    left = decode_eye(left_value, expected_height, expected_width, left_eye_key)
+    right = decode_eye(right_value, expected_height, expected_width, right_eye_key)
     left_t = torch.from_numpy(left).permute(2, 0, 1)
     right_t = torch.from_numpy(right).permute(2, 0, 1)
     eyes = torch.cat((left_t, right_t), dim=0).unsqueeze(0).to(device=device)
@@ -1042,7 +1063,12 @@ def train(args: argparse.Namespace) -> None:
     interrupted = False
     try:
         print(f"[SDAEA] device={device}; run_dir={run_dir}")
-        env = GodotEnv(
+        env_class = GodotEnv
+        if args.transport in ("raw", "gpu"):
+            from fast_godot_env import FastGodotEnv
+
+            env_class = FastGodotEnv
+        env = env_class(
             env_path=args.env_path,
             port=args.port,
             show_window=args.show_window,
@@ -1050,6 +1076,7 @@ def train(args: argparse.Namespace) -> None:
             framerate=args.framerate,
             action_repeat=args.action_repeat,
             speedup=args.speedup,
+            transport=args.transport,
         )
         specs = extract_action_specs(env, args.learn_shoot)
         print("[SDAEA] exact Godot action order:")
@@ -1915,6 +1942,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--self-test", action="store_true", help="Run local tests, no Godot.")
     parser.add_argument("--env-path", default=None, help="Exported Godot binary base path.")
     parser.add_argument("--port", type=int, default=11008)
+    parser.add_argument("--transport", choices=("hex", "raw", "gpu"), default="hex")
     parser.add_argument(
         "--show-window",
         action=argparse.BooleanOptionalAction,

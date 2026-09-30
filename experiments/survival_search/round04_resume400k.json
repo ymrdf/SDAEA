@@ -1,0 +1,211 @@
+[
+  {
+    "label": "ff_bounded",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "bounded",
+      "actor_lr": 0.1,
+      "critic_lr": 0.5,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/ff_bounded/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "m256_bounded",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "bounded",
+      "actor_lr": 0.1,
+      "critic_lr": 0.5,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/m256_bounded/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "ff_adam_small",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "adam",
+      "actor_lr": 1e-05,
+      "critic_lr": 3e-05,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/ff_adam_small/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "m256_adam_small",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "adam",
+      "actor_lr": 1e-05,
+      "critic_lr": 3e-05,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/m256_adam_small/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "ff_adam_mid",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "adam",
+      "actor_lr": 0.0001,
+      "critic_lr": 0.0003,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/ff_adam_mid/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "m256_adam_mid",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "adam",
+      "actor_lr": 0.0001,
+      "critic_lr": 0.0003,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/m256_adam_mid/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "ff_adam_large",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "adam",
+      "actor_lr": 0.0003,
+      "critic_lr": 0.001,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/ff_adam_large/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "m256_adam_large",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "optimizer": "adam",
+      "actor_lr": 0.0003,
+      "critic_lr": 0.001,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/m256_adam_large/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "ff_adam_mid_hp",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 1.0,
+      "optimizer": "adam",
+      "actor_lr": 0.0001,
+      "critic_lr": 0.0003,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/ff_adam_mid_hp/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "m256_adam_mid_hp",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 1.0,
+      "optimizer": "adam",
+      "actor_lr": 0.0001,
+      "critic_lr": 0.0003,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/m256_adam_mid_hp/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "frozen_m256_base",
+    "role": "frozen",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.999,
+      "energy_delta": 0.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/frozen_m256_base/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "frozen_frozen_old",
+    "role": "frozen",
+    "config": {},
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/frozen_frozen_old/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "random_0",
+    "role": "random",
+    "config": {},
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/random_0/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "random_1",
+    "role": "random",
+    "config": {},
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/random_1/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "stationary_0",
+    "role": "stationary",
+    "config": {},
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/stationary_0/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  },
+  {
+    "label": "stationary_1",
+    "role": "stationary",
+    "config": {},
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round04_long_20260930/stationary_1/interrupted.pt",
+    "transfer_objective": false,
+    "transfer_optimizer": false
+  }
+]

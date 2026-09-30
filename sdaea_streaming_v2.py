@@ -294,7 +294,7 @@ class RecurrentVisualNetwork(VisualNetwork):
             previous = x.new_zeros(1, self.memory.size)
         tau = (self.memory.log_tau + self.memory.initial_log_tau).clamp(
             math.log(1.0), math.log(10000.0)).exp()
-        durations = x.new_tensor(elapsed).unsqueeze(1)
+        durations = (elapsed.to(device=x.device, dtype=x.dtype) if torch.is_tensor(elapsed) else x.new_tensor(elapsed)).unsqueeze(1)
         decays = torch.exp(-durations / tau)
         reads, first = [], None
         for i in range(len(elapsed)):
@@ -358,8 +358,9 @@ class AdamUpdate:
         advantage = max(-self.td_clip, min(self.td_clip, delta))
         before = [p.detach().clone() for p in self.parameters]
         self.optimizer.zero_grad(set_to_none=True)
-        for p, g in zip(self.parameters, gradients):
-            p.grad = g.detach().mul(-advantage)
+        scaled = torch._foreach_mul([g.detach() for g in gradients], -advantage)
+        for p, g in zip(self.parameters, scaled):
+            p.grad = g
         torch.nn.utils.clip_grad_norm_(self.parameters, self.grad_clip,
                                       error_if_nonfinite=True, foreach=True)
         self.optimizer.step()

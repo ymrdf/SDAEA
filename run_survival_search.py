@@ -77,7 +77,7 @@ def worker(a):
     if a.fast:
         from fast_godot_env import FastGodotEnv
         GodotEnv=FastGodotEnv
-    env=GodotEnv(env_path=None,port=a.port,show_window=True,seed=a.seed)
+    env=GodotEnv(env_path=None,port=a.port,show_window=True,seed=a.seed,transport=a.transport)
     from grow_policy import grow_network
     source=torch.load(a.source_checkpoint,map_location='cpu',weights_only=True)
     assert source['config']['width']==256 and source['config'].get('depth',2)==3
@@ -122,11 +122,13 @@ def worker(a):
         legacy=env.call('get_obs')
         for current,old in zip(obs,legacy):
             for eye in ('left_eye','right_eye'):
-                assert current[eye].tobytes()==bytes.fromhex(old[eye]), 'Raw and hex pixels differ'
+                pixels=current[eye][..., :3].cpu().numpy() if torch.is_tensor(current[eye]) else current[eye]
+                assert pixels.tobytes()==bytes.fromhex(old[eye]), 'Transport and hex pixels differ'
     states=[m.state(o,None,0) for m,o in zip(memories,obs)]
     plan=dict(labels=LABELS,configs=[asdict(c) for c in configs],
               phases=phase_plan(a),
-              source_checkpoint=str(a.source_checkpoint),shared_scene=True,fast=a.fast,
+              source_checkpoint=str(a.source_checkpoint),shared_scene=True,fast=a.fast,transport=a.transport,batch_train=a.batch_train,batch_eval=a.batch_eval,
+              cumulative_training_offset=a.cumulative_train_offset,resume_shared_offset=a.resume_shared_offset,
               parameter_counts={label:sum(p.numel() for model in (l.actor,l.critic) for p in model.parameters()) for label,l in zip(LABELS,learners)},
               variants=VARIANTS, seed=a.seed, green_blocks=a.green_blocks, red_blocks=a.red_blocks,
               notes='All policies compete simultaneously in one scene. New memory/CNN connections change the initial policy; matching feedforward weights transferred from source. Equal HP6 at each phase; resources/world continue evolving. Single training seed per variant. Initial and final evaluation weights are frozen. No block labels or environment rewards enter policy or learning.')
@@ -152,6 +154,10 @@ def worker(a):
           assert all(abs(extract_hp(o,'hp')-6.)<1e-6 for o in obs)
           for i in range(N):
             memories[i].clear();states[i]=memories[i].state(obs[i],None,0)
+          training_batch=None
+          if a.batch_train and is_training:
+            from training_policy_batch import TrainingPolicyBatch
+            training_batch=TrainingPolicyBatch(learners)
           frozen_batch=None
           if a.batch_eval and not is_training:
             from frozen_policy_batch import FrozenPolicyBatch
@@ -164,11 +170,12 @@ def worker(a):
           phase_started=time.perf_counter();phase_bytes=getattr(env,'bytes_received',0);phase_frames=getattr(env,'rgb_frames',0)
           stage_times=dict(action=0.,environment=0.,learning_and_logging=0.)
           elapsed_phase=0
-          write(a.run_dir/'status.json',dict(status='running',phase=phase,step=total,phase_step=0,total_steps=sum(length for _,length in plan['phases']),updated_at=time.time()))
+          write(a.run_dir/'status.json',dict(status='running',phase=phase,step=a.resume_shared_offset+total,phase_step=0,total_steps=a.resume_shared_offset+sum(length for _,length in plan['phases']),updated_at=time.time()))
           while elapsed_phase<length and not stop:
             stage_start=time.perf_counter()
             actions=[]
             batch_probs={} if frozen_batch is None else frozen_batch.probabilities(states)
+            training_probs={} if training_batch is None else training_batch.prepare(states)
             for i,l in enumerate(learners):
               if VARIANTS[i].get('clear_memory'):
                 if not l.c.no_learn: raise ValueError('Memory ablation is evaluation-only')
@@ -176,6 +183,8 @@ def worker(a):
               if i in STATIONARY:
                 actions.append(table.index([1 if s.learned else s.fixed_value for s in specs]))
               elif i in RANDOM: actions.append(int(rngs[i].integers(len(table))))
+              elif i in training_probs:
+                actions.append(int(rngs[i].choice(len(table),p=training_probs[i])))
               elif frozen_batch is not None:
                 probs=batch_probs[i]
                 actions.append(int(rngs[i].choice(len(table),p=probs)))
@@ -208,12 +217,16 @@ def worker(a):
               obs=snapshot
             stage_times['environment']+=time.perf_counter()-stage_start
             stage_start=time.perf_counter()
+            next_states=[None if term[i] else memories[i].state(obs[i],actions[i],elapsed) for i in range(N)]
+            training_metrics={} if training_batch is None else training_batch.learn(states,actions,values,next_states,elapsed,term)
             for i,l in enumerate(learners):
-              nxt=None if term[i] else memories[i].state(obs[i],actions[i],elapsed)
+              nxt=next_states[i]
               if a.verify_visuals and nxt is not None:
                 visual_changes[i]+=int(not torch.equal(states[i].image,nxt.image))
               update_metrics={}
-              if frozen_batch is not None and i in batch_probs:
+              if i in training_metrics:
+                update_metrics=training_metrics[i]
+              elif frozen_batch is not None and i in batch_probs:
                 probs=batch_probs[i]
                 update_metrics=dict(entropy=float(-(probs*np.log(probs)).sum()),max_probability=float(probs.max()))
               elif i not in RANDOM | STATIONARY:
@@ -245,7 +258,7 @@ def worker(a):
                   states[i].elapsed=interval
               obs=reset_obs
             if total//500 != (total-elapsed)//500:
-              f.flush();write(a.run_dir/'status.json',dict(status='running',phase=phase,step=total,phase_step=elapsed_phase,total_steps=sum(length for _,length in plan['phases']),updated_at=time.time(),phase_seconds=time.perf_counter()-phase_started,shared_steps_per_second=elapsed_phase/(time.perf_counter()-phase_started),cuda_allocated_mb=torch.cuda.memory_allocated()/2**20,cuda_peak_mb=torch.cuda.max_memory_allocated()/2**20))
+              f.flush();write(a.run_dir/'status.json',dict(status='running',phase=phase,step=a.resume_shared_offset+total,phase_step=elapsed_phase,total_steps=a.resume_shared_offset+sum(length for _,length in plan['phases']),updated_at=time.time(),phase_seconds=time.perf_counter()-phase_started,shared_steps_per_second=elapsed_phase/(time.perf_counter()-phase_started),cuda_allocated_mb=torch.cuda.memory_allocated()/2**20,cuda_peak_mb=torch.cuda.max_memory_allocated()/2**20))
               print(f'phase={phase} shared_step={total}',flush=True)
             if total//10000 != (total-elapsed)//10000:
               for i,l in enumerate(learners): l.save(a.run_dir/LABELS[i]/'latest.pt',specs,total)
@@ -265,17 +278,18 @@ def worker(a):
           results[phase]=dict(zip(LABELS,stats));write(a.run_dir/'comparison.json',results)
           timings[phase]=dict(stage_wall_seconds=stage_times,steps=length,seconds=time.perf_counter()-phase_started,bytes_received=getattr(env,'bytes_received',0)-phase_bytes,rgb_observations=getattr(env,'rgb_frames',0)-phase_frames)
           write(a.run_dir/'timings.json',timings)
+          if a.gpu_verify: write(a.run_dir/'gpu_pixel_checks.json',dict(verified_eyes=getattr(env,'gpu_verified_eyes',0)))
         if a.verify_visuals:
             assert all(n>0 for n in visual_changes), 'A camera never changed'
             write(a.run_dir/'visual_checks.json',dict(zip(LABELS,visual_changes)))
-        write(a.run_dir/'status.json',dict(status='complete',step=total,finished_at=time.time(),selective_reset_checks=reset_checks))
+        write(a.run_dir/'status.json',dict(status='complete',step=a.resume_shared_offset+total,total_training_steps=a.cumulative_train_offset+a.train_steps,finished_at=time.time(),selective_reset_checks=reset_checks))
     except BaseException as e:
         for i,l in enumerate(learners): l.save(a.run_dir/LABELS[i]/'interrupted.pt',specs,total)
-        write(a.run_dir/'status.json',dict(status='failed',step=total,error=str(e)));raise
+        write(a.run_dir/'status.json',dict(status='failed',step=a.resume_shared_offset+total,total_training_steps=a.cumulative_train_offset+sum(n for phase,n in plan['phases'] if phase.startswith('train')),error=str(e)));raise
     finally: env.close()
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--batch-eval',action='store_true');p.add_argument('--train-chunk-steps',type=int,default=0);p.add_argument('--intermediate-eval-steps',type=int,default=20000);p.add_argument('--variants',type=Path,required=True);p.add_argument('--seed',type=int,default=29);p.add_argument('--green-blocks',type=int,default=60);p.add_argument('--red-blocks',type=int,default=200);p.add_argument('--run-dir',type=Path,required=True);p.add_argument('--port',type=int,default=11088);p.add_argument('--train-steps',type=int,default=50000);p.add_argument('--eval-steps',type=int,default=50000);p.add_argument('--worker',action='store_true');p.add_argument('--fast',action='store_true');p.add_argument('--uncapped',action='store_true');p.add_argument('--source-checkpoint',type=Path,required=True);p.add_argument('--initial-eval-steps',type=int,default=10000);p.add_argument('--verify-visuals',action='store_true');p.add_argument('--eye-width',type=int,default=160);p.add_argument('--eye-height',type=int,default=150);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--batch-train',action=argparse.BooleanOptionalAction,default=True);p.add_argument('--cumulative-train-offset',type=int,default=0);p.add_argument('--resume-shared-offset',type=int,default=0);p.add_argument('--gpu-verify',action='store_true');p.add_argument('--transport',choices=('raw','gpu'),default='raw');p.add_argument('--batch-eval',action='store_true');p.add_argument('--train-chunk-steps',type=int,default=0);p.add_argument('--intermediate-eval-steps',type=int,default=20000);p.add_argument('--variants',type=Path,required=True);p.add_argument('--seed',type=int,default=29);p.add_argument('--green-blocks',type=int,default=60);p.add_argument('--red-blocks',type=int,default=200);p.add_argument('--run-dir',type=Path,required=True);p.add_argument('--port',type=int,default=11088);p.add_argument('--train-steps',type=int,default=50000);p.add_argument('--eval-steps',type=int,default=50000);p.add_argument('--worker',action='store_true');p.add_argument('--fast',action='store_true');p.add_argument('--uncapped',action='store_true');p.add_argument('--source-checkpoint',type=Path,required=True);p.add_argument('--initial-eval-steps',type=int,default=10000);p.add_argument('--verify-visuals',action='store_true');p.add_argument('--eye-width',type=int,default=160);p.add_argument('--eye-height',type=int,default=150);a=p.parse_args()
     global VARIANTS, LABELS, N, FROZEN, RANDOM, STATIONARY
     VARIANTS=json.loads(a.variants.read_text())
     LABELS=[v['label'] for v in VARIANTS];N=len(LABELS)
@@ -292,11 +306,14 @@ def main():
     if min(a.train_steps,a.initial_eval_steps)<0 or a.eval_steps<=0: p.error('Require nonnegative training/initial budgets and positive final evaluation')
     if a.worker: return worker(a)
     a.run_dir.mkdir(parents=True,exist_ok=False)
-    write(a.run_dir/'status.json',dict(status='starting',started_at=time.time()))
+    write(a.run_dir/'status.json',dict(status='starting',resume_shared_offset=a.resume_shared_offset,cumulative_training_offset=a.cumulative_train_offset,training_budget=a.cumulative_train_offset+a.train_steps,started_at=time.time()))
     scene=ROOT.parent/'EnvolutionRobot'/'scenes/training_scene'/f'search_{a.run_dir.name}.tscn'
     scene.write_text('[gd_scene load_steps=3 format=3]\n[ext_resource type="PackedScene" path="res://scenes/training_scene/training_scene.tscn" id="1"]\n[ext_resource type="Script" path="res://scenes/training_scene/competition.gd" id="2"]\n[node name="Competition" instance=ExtResource("1")]\nscript = ExtResource("2")\n[node name="PlayingArea" parent="." index="2"]\n'+f'number_of_robots_to_spawn = {N}\npolicy_labels = Array[String]({json.dumps(LABELS)})\nnumber_of_green_blocks_to_spawn = {a.green_blocks}\nnumber_of_red_blocks_to_spawn = {a.red_blocks}\nmin_green_blocks = {a.green_blocks}\nmin_red_blocks = {a.red_blocks}\n')
     shutil.copy2(a.variants,a.run_dir/'variants.json')
-    sources=[ROOT/'run_survival_search.py',ROOT/'frozen_policy_batch.py',ROOT/'grow_policy.py',ROOT/'sdaea_streaming_v2.py',ROOT/'sdaea_online_validate.py',ROOT/'fast_godot_env.py']
+    sources=[ROOT/'run_survival_search.py',ROOT/'frozen_policy_batch.py',ROOT/'training_policy_batch.py',ROOT/'grow_policy.py',ROOT/'sdaea_streaming_v2.py',ROOT/'sdaea_online_validate.py',ROOT/'fast_godot_env.py',ROOT/'gpu_vision_transport.py',ROOT/'gpu_vision/cuda_external_copy.cpp']
+    sources += list((ROOT.parent/'EnvolutionRobot/native/gpu_vision_bridge/src').glob('*.cpp'))
+    sources += list((ROOT.parent/'EnvolutionRobot/native/gpu_vision_bridge/src').glob('*.h'))
+    sources += [ROOT.parent/'EnvolutionRobot/native/gpu_vision_bridge/SConstruct',ROOT.parent/'EnvolutionRobot/addons/gpu_vision_bridge/gpu_vision_bridge.gdextension']
     sources += [p for p in (ROOT.parent/'EnvolutionRobot').rglob('*')
                 if p.is_file() and p.suffix in ('.gd','.tscn','.godot')
                 and not any(part.startswith('.') for part in p.relative_to(ROOT.parent).parts)]
@@ -317,7 +334,8 @@ def main():
           if trainer.poll() is not None or time.monotonic()>deadline: raise RuntimeError('Trainer listener failed')
           time.sleep(.25)
         flags=['--fixed-fps','20','--disable-vsync','--disable-render-loop'] if a.fast or a.uncapped else []
-        if a.fast: flags+=['--transport=raw']
+        if a.fast: flags+=[f'--transport={a.transport}']
+        if a.gpu_verify: flags+=['--gpu_verify=true']
         flags += [f'--eye_width={a.eye_width}', f'--eye_height={a.eye_height}']
         game=subprocess.Popen([godot,*flags,'--path',str(ROOT.parent/'EnvolutionRobot'),f'res://scenes/training_scene/{scene.name}',f'--port={a.port}',f'--env_seed={a.seed}'],stdout=gout,stderr=subprocess.STDOUT,env=env)
         last=time.monotonic();size=-1;last_gpu=0
