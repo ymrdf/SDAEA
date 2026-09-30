@@ -1,0 +1,29 @@
+{
+  "status": "complete",
+  "source_checkpoint": "/home/gao/learn/SDAEA/runs/competition_20260929_small/96_w256_d3/latest.pt",
+  "trials": [
+    {
+      "seed": 41,
+      "variants": "/home/gao/learn/SDAEA/experiments/survival_search/validation01_seed41.json",
+      "run_dir": "/home/gao/learn/SDAEA/runs/survival_validation01_seed41_20260930",
+      "status": "complete",
+      "finished_at": 1790715843.5081813
+    },
+    {
+      "seed": 43,
+      "variants": "/home/gao/learn/SDAEA/experiments/survival_search/validation01_seed43.json",
+      "run_dir": "/home/gao/learn/SDAEA/runs/survival_validation01_seed43_20260930",
+      "status": "complete",
+      "finished_at": 1790718597.3686361
+    },
+    {
+      "seed": 47,
+      "variants": "/home/gao/learn/SDAEA/experiments/survival_search/validation01_seed47.json",
+      "run_dir": "/home/gao/learn/SDAEA/runs/survival_validation01_seed47_20260930",
+      "status": "complete",
+      "finished_at": 1790721390.3649075
+    }
+  ],
+  "notes": "16 robots per shared world: two copies each of trace0 and FC2 with memory kept/cleared; two trained feedforward, two old frozen, four random controls. Frozen only; three fresh world seeds; same learned weights, not independent training replicates. Slots shuffled using predetermined seed.",
+  "queue_pid": 807323
+}

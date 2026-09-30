@@ -1,0 +1,169 @@
+[
+  {
+    "label": "ff_base",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.999,
+      "energy_delta": 0.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "m256_base",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.999,
+      "energy_delta": 0.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "ff_long",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "m256_long",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 0.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "ff_hp",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.999,
+      "energy_delta": 1.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "m256_hp",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.999,
+      "energy_delta": 1.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "ff_long_hp",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 1.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "m256_long_hp",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 1.0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "ff_long_hp_t0",
+    "config": {
+      "recurrent_size": 0,
+      "gamma": 0.9999,
+      "energy_delta": 1.0,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "m256_long_hp_t0",
+    "config": {
+      "recurrent_size": 256,
+      "gamma": 0.9999,
+      "energy_delta": 1.0,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt",
+    "transfer_objective": true
+  },
+  {
+    "label": "frozen_passive",
+    "role": "frozen",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round02_20260930/m256_k003_t20/trained.pt"
+  },
+  {
+    "label": "frozen_old",
+    "role": "frozen",
+    "config": {},
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round02_20260930/frozen_old/trained.pt"
+  },
+  {
+    "label": "random_0",
+    "role": "random",
+    "config": {}
+  },
+  {
+    "label": "random_1",
+    "role": "random",
+    "config": {}
+  },
+  {
+    "label": "stationary_0",
+    "role": "stationary",
+    "config": {}
+  },
+  {
+    "label": "stationary_1",
+    "role": "stationary",
+    "config": {}
+  }
+]

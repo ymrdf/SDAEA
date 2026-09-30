@@ -1,0 +1,147 @@
+[
+  {
+    "label": "ff_k3_t0",
+    "config": {
+      "recurrent_size": 0,
+      "trace_steps": 0.0,
+      "actor_kappa": 3.0,
+      "critic_kappa": 2.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt"
+  },
+  {
+    "label": "m256_k3_t0",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 0.0,
+      "actor_kappa": 3.0,
+      "critic_kappa": 2.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt"
+  },
+  {
+    "label": "ff_k03_t0",
+    "config": {
+      "recurrent_size": 0,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.3,
+      "critic_kappa": 0.2
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt"
+  },
+  {
+    "label": "m256_k03_t0",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.3,
+      "critic_kappa": 0.2
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt"
+  },
+  {
+    "label": "ff_k003_t0",
+    "config": {
+      "recurrent_size": 0,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt"
+  },
+  {
+    "label": "m256_k003_t0",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt"
+  },
+  {
+    "label": "ff_k003_t20",
+    "config": {
+      "recurrent_size": 0,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt"
+  },
+  {
+    "label": "m256_k003_t20",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 20.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt"
+  },
+  {
+    "label": "ff_actor003_t0",
+    "config": {
+      "recurrent_size": 0,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 2.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt"
+  },
+  {
+    "label": "m256_actor003_t0",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 0.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 2.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt"
+  },
+  {
+    "label": "ff_k003_t100",
+    "config": {
+      "recurrent_size": 0,
+      "trace_steps": 100.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/ff_96_w256_d3/trained.pt"
+  },
+  {
+    "label": "m256_k003_t100",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 100.0,
+      "actor_kappa": 0.03,
+      "critic_kappa": 0.02
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt"
+  },
+  {
+    "label": "frozen_previous_memory",
+    "role": "frozen",
+    "config": {
+      "recurrent_size": 256,
+      "trace_steps": 0.0
+    },
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/m256_trace0/trained.pt"
+  },
+  {
+    "label": "frozen_old",
+    "role": "frozen",
+    "config": {},
+    "checkpoint": "/home/gao/learn/SDAEA/runs/survival_search_round01_20260930/frozen_a/trained.pt"
+  },
+  {
+    "label": "random_0",
+    "role": "random",
+    "config": {}
+  },
+  {
+    "label": "random_1",
+    "role": "random",
+    "config": {}
+  }
+]

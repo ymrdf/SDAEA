@@ -1,0 +1,18 @@
+[
+ {"label":"ff_96_w256_d3","config":{}},
+ {"label":"m64_fc1","config":{"recurrent_size":64}},
+ {"label":"m256_fc1","config":{"recurrent_size":256}},
+ {"label":"m512_fc1","config":{"recurrent_size":512}},
+ {"label":"m256_fc2","config":{"recurrent_size":256,"recurrent_layer":1}},
+ {"label":"m256_fc3","config":{"recurrent_size":256,"recurrent_layer":2}},
+ {"label":"m256_t16","config":{"recurrent_size":256,"bptt_steps":16}},
+ {"label":"m256_cnn3","config":{"recurrent_size":256,"cnn_extra":1}},
+ {"label":"m256_res48","config":{"recurrent_size":256,"image_size":48}},
+ {"label":"m256_res144","config":{"recurrent_size":256,"image_size":144}},
+ {"label":"m256_w512","config":{"recurrent_size":256,"width":512}},
+ {"label":"m256_trace0","config":{"recurrent_size":256,"trace_steps":0}},
+ {"label":"frozen_a","role":"frozen","config":{}},
+ {"label":"frozen_b","role":"frozen","config":{}},
+ {"label":"random_a","role":"random","config":{}},
+ {"label":"random_b","role":"random","config":{}}
+]

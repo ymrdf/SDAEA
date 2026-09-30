@@ -7,7 +7,8 @@ Then press Play in Godot. Dependencies and eye decoding are shared with v1.
 No environment rewards, replay buffer, trajectory batches, or world snapshots.
 One online update follows each motor decision (default: hold for 4 env.step calls).
 Only the current transition, sensory EMA and parameter-sized eligibility traces
-are retained. A single signed critic estimates future internal valence; positive
+are retained by default. Optional gated recurrence retains a bounded observation
+window for truncated temporal gradients. A single signed critic estimates future internal valence; positive
 and negative body signals remain explicitly logged as pleasure/pain.
 
 Update design is adapted from Stream AC / ObGD (Elsayed et al., 2024):
@@ -60,7 +61,13 @@ class Config:
     alive: float = 0.01
     death_cost: float = 2.0
     shaping: float = 1.0
+    energy_delta: float = 0.0  # Optional linear HP-change objective; body-only.
     memory_steps: float = 20.0
+    recurrent_size: int = 0  # 0 preserves the original feedforward baseline.
+    recurrent_tau: float = 200.0  # Initial decay time in physical steps.
+    recurrent_layer: int = 0  # Zero-based hidden layer receiving feedback.
+    cnn_extra: int = 0  # Additional stride-1 convolutions after the original CNN.
+    bptt_steps: int = 8  # Decisions, including the current decision.
     depth: int = 2
     width: int = 96
     image_size: int = 48
@@ -79,9 +86,13 @@ def validate(c: Config) -> None:
                  "actor_kappa", "critic_kappa", "memory_steps"):
         if getattr(c, name) <= 0:
             raise ValueError(f"{name} must be positive")
+    if c.recurrent_size < 0 or c.recurrent_tau <= 0 or c.bptt_steps < 1:
+        raise ValueError("Require recurrent_size>=0, recurrent_tau>0, bptt_steps>=1")
+    if not 0 <= c.recurrent_layer < c.depth or c.cnn_extra < 0:
+        raise ValueError("Invalid recurrent layer or CNN depth")
     if not 0 < c.gamma < 1 or not 0 <= c.exploration < 1 or c.trace_steps < 0:
         raise ValueError("Require 0<gamma<1, 0<=exploration<1, trace_steps>=0")
-    if min(c.alive, c.death_cost, c.shaping, c.entropy) < 0:
+    if min(c.alive, c.death_cost, c.shaping, c.entropy, c.energy_delta) < 0:
         raise ValueError("Internal signal and entropy coefficients must be nonnegative")
     if (c.deterministic or c.random_actions) and not c.no_learn:
         raise ValueError("--deterministic/--random-actions require --no-learn")
@@ -95,12 +106,14 @@ def body_signal(hp: float, next_hp: float, terminal: bool, c: Config) -> dict:
     potential_change = c.gamma * next_phi - phi
     survival = 0.0 if terminal else c.alive
     death = c.death_cost if terminal else 0.0
-    valence = survival - death + potential_change
+    energy_change = c.energy_delta * ((0.0 if terminal else max(0.0, next_hp)) - hp) / c.hp_unit
+    valence = survival - death + potential_change + energy_change
     return {
         "valence": valence,
-        "pleasure": survival + max(potential_change, 0.0),
-        "pain": death + max(-potential_change, 0.0),
+        "pleasure": survival + max(potential_change, 0.0) + max(energy_change, 0.0),
+        "pain": death + max(-potential_change, 0.0) + max(-energy_change, 0.0),
         "potential_change": potential_change,
+        "energy_change": energy_change,
     }
 
 
@@ -117,6 +130,7 @@ class State:
     image: torch.Tensor
     history: torch.Tensor
     body: torch.Tensor
+    elapsed: int = 0  # Physical steps since the preceding observation.
 
 
 class SensoryMemory:
@@ -149,19 +163,25 @@ class SensoryMemory:
         if previous_action is not None:
             body[0, 3 + previous_action] = 1.0
         self.last_hp = hp
-        return State(image.detach(), self.ema.detach().clone(), body)
+        return State(image.detach(), self.ema.detach().clone(), body, elapsed)
 
 
 class VisualNetwork(nn.Module):
     """Owns its entire visual-to-output path; no detached learned world encoder."""
 
-    def __init__(self, n_actions: int, outputs: int, width: int, depth: int = 2):
+    def __init__(self, n_actions: int, outputs: int, width: int, depth: int = 2, cnn_extra: int = 0):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(6, 16, 5, stride=2, padding=2), nn.LeakyReLU(0.1),
             nn.Conv2d(16, 24, 3, stride=2, padding=1), nn.LeakyReLU(0.1),
             nn.AdaptiveAvgPool2d((4, 6)), nn.Flatten(),
         )
+        if cnn_extra:
+            layers = list(self.conv.children())
+            extra = []
+            for _ in range(cnn_extra):
+                extra.extend([nn.Conv2d(24, 24, 3, padding=1), nn.LeakyReLU(0.1)])
+            self.conv = nn.Sequential(*(layers[:-2] + extra + layers[-2:]))
         # Raw spatial RGB average/max paths retain small bright objects while the
         # learned representation is immature. Every RGB channel is treated equally.
         inputs = 24 * 4 * 6 + 4 * 6 * 6 * 8 + 3 + n_actions
@@ -182,14 +202,107 @@ class VisualNetwork(nn.Module):
             # Small nonzero output weights let the first body signal train vision.
             nn.init.normal_(self.output.weight, std=0.005)
 
-    def forward(self, s: State):
+    def visual_features(self, s: State):
         small = F.adaptive_avg_pool2d(s.image, (6, 8))
         peak = F.adaptive_max_pool2d(s.image, (6, 8))
         spatial = torch.cat((small * 2 - 1, peak * 2 - 1,
                              s.history * 2 - 1, 2 * (small - s.history)), dim=1)
         features = torch.cat((self.conv(s.image * 2 - 1),
                               spatial.flatten(1), s.body), dim=1)
-        return self.output(self.hidden(features))
+        return features
+
+    def encode(self, s: State):
+        return self.hidden(self.visual_features(s))
+
+    def forward(self, s: State):
+        return self.output(self.encode(s))
+
+
+class DecayingMemory(nn.Module):
+    """Bounded gated state; elapsed is measured in physics steps, not calls."""
+
+    def __init__(self, inputs: int, size: int, tau: float):
+        super().__init__()
+        self.size = size
+        self.log_tau = nn.Parameter(torch.zeros(size))
+        self.register_buffer("initial_log_tau", torch.tensor(math.log(tau)))
+        self.gates = nn.Linear(inputs + size, 3 * size)
+        self.candidate = nn.Linear(inputs + size, size)
+        nn.init.zeros_(self.gates.bias)
+        with torch.no_grad():
+            self.gates.bias[:size].fill_(-2.0)  # Initially conservative writing.
+
+    def decay(self, x, previous=None, elapsed=0):
+        if previous is None:
+            previous = x.new_zeros(x.shape[0], self.size)
+        tau = (self.log_tau + self.initial_log_tau).clamp(
+            math.log(1.0), math.log(10000.0)).exp()
+        return previous * torch.exp(-float(elapsed) / tau)
+
+    def forward(self, x, previous=None, elapsed=0):
+        faded = self.decay(x, previous, elapsed)
+        return self.update_faded(x, faded)
+
+    def update_faded(self, x, faded):
+        write, reset, read = self.gates(torch.cat((x, faded), -1)).sigmoid().chunk(3, -1)
+        candidate = self.candidate(torch.cat((x, reset * faded), -1)).tanh()
+        state = (1 - write) * faded + write * candidate
+        return read * state, state
+
+
+class RecurrentVisualNetwork(VisualNetwork):
+    """Previous memory enters FC1 before normalization and activation."""
+
+    def __init__(self, n_actions, outputs, width, depth, size=256, tau=200.0, layer=0, cnn_extra=0):
+        super().__init__(n_actions, outputs, width, depth, cnn_extra)
+        self.recurrent_layer = layer
+        self.memory = DecayingMemory(width, size, tau)
+        self.memory_feedback = nn.Linear(size, width, bias=False)
+        self.memory_read = nn.Linear(size, width, bias=False)
+
+    def forward_features(self, features, previous=None, elapsed=0):
+        faded = self.memory.decay(features, previous, elapsed)
+        x = features
+        for index in range(len(self.hidden) // 3):
+            x = self.hidden[index * 3](x)
+            if index == self.recurrent_layer:
+                x = x + self.memory_feedback(faded)
+            x = self.hidden[index * 3 + 2](self.hidden[index * 3 + 1](x))
+            if index == self.recurrent_layer:
+                read, state = self.memory(x, faded, elapsed=0)
+                x = x + self.memory_read(read)
+        return self.output(x), state
+
+    def sequence(self, features, previous, elapsed):
+        # Layers before/after the recurrent block are independent across time.
+        # Batch them as well as the CNN; only the feedback block must be sequential.
+        layer = self.recurrent_layer * 3
+        x = features
+        for module in list(self.hidden.children())[:layer]:
+            x = module(x)
+        projected = self.hidden[layer](x)
+        if previous is None:
+            previous = x.new_zeros(1, self.memory.size)
+        tau = (self.memory.log_tau + self.memory.initial_log_tau).clamp(
+            math.log(1.0), math.log(10000.0)).exp()
+        durations = x.new_tensor(elapsed).unsqueeze(1)
+        decays = torch.exp(-durations / tau)
+        reads, first = [], None
+        for i in range(len(elapsed)):
+            faded = previous * decays[i:i+1]
+            current = projected[i:i+1] + self.memory_feedback(faded)
+            current = self.hidden[layer+2](self.hidden[layer+1](current))
+            read, previous = self.memory.update_faded(current, faded)
+            if first is None:
+                first = previous
+            reads.append(current + self.memory_read(read))
+        x = torch.cat(reads)
+        for module in list(self.hidden.children())[layer+3:]:
+            x = module(x)
+        return self.output(x[-1:]), previous, first
+
+    def forward(self, s, previous=None):
+        return self.forward_features(self.visual_features(s), previous, s.elapsed)
 
 
 class BoundedTrace:
@@ -204,15 +317,14 @@ class BoundedTrace:
     def step(self, gradients, delta: float, decay: float) -> dict:
         if not math.isfinite(delta):
             raise FloatingPointError("Non-finite TD error")
-        for trace, grad in zip(self.traces, gradients):
-            trace.mul_(decay).add_(grad.detach())
-        l1 = sum(t.abs().sum() for t in self.traces).item()
+        torch._foreach_mul_(self.traces, decay)
+        torch._foreach_add_(self.traces, [g.detach() for g in gradients])
+        l1 = torch.stack(torch._foreach_norm(self.traces, 1)).sum().item()
         if not math.isfinite(l1):
             raise FloatingPointError("Non-finite eligibility trace")
         denominator = max(1.0, self.lr * self.kappa * max(1.0, abs(delta)) * l1)
         effective_lr = self.lr / denominator
-        for p, trace in zip(self.parameters, self.traces):
-            p.add_(trace, alpha=effective_lr * delta)
+        torch._foreach_add_(self.parameters, self.traces, alpha=effective_lr * delta)
         return {"lr": effective_lr, "trace_l1": l1,
                 "update_l1": effective_lr * abs(delta) * l1}
 
@@ -225,15 +337,41 @@ class BoundedTrace:
 class Learner:
     def __init__(self, c: Config, n_actions: int, device: torch.device):
         self.c, self.n_actions, self.device = c, n_actions, device
-        self.actor = VisualNetwork(n_actions, n_actions, c.width, c.depth).to(device)
-        self.critic = VisualNetwork(n_actions, 1, c.width, c.depth).to(device)
+        def network(outputs):
+            if c.recurrent_size:
+                return RecurrentVisualNetwork(n_actions, outputs, c.width, c.depth,
+                                              c.recurrent_size, c.recurrent_tau, c.recurrent_layer, c.cnn_extra).to(device)
+            return VisualNetwork(n_actions, outputs, c.width, c.depth, c.cnn_extra).to(device)
+        self.actor, self.critic = network(n_actions), network(1)
+        self.context = []
+        self.anchors = {"actor": None, "critic": None}
         self.actor_update = BoundedTrace(self.actor.parameters(), c.actor_lr, c.actor_kappa)
         self.critic_update = BoundedTrace(self.critic.parameters(), c.critic_lr, c.critic_kappa)
         self.trace_discount = 0.0 if c.trace_steps == 0 else math.exp(-1 / c.trace_steps)
         self.previous_elapsed = None
 
+    def evaluate(self, name, s):
+        model = getattr(self, name)
+        if not self.c.recurrent_size:
+            return model(s), None, None
+        h = self.anchors[name]
+        if self.c.no_learn:
+            output, h = model(s, h)
+            return output, h, h
+        sequence = self.context + [s]
+        # CNN over the temporal window is one GPU batch; recurrence remains ordered.
+        batch = State(torch.cat([v.image for v in sequence]),
+                      torch.cat([v.history for v in sequence]),
+                      torch.cat([v.body for v in sequence]))
+        features = model.visual_features(batch)
+        return model.sequence(features, h, [v.elapsed for v in sequence])
+
     def distribution(self, s: State):
-        probs = torch.softmax(self.actor(s), -1)
+        logits, _, _ = self.evaluate("actor", s)
+        return self.policy(logits)
+
+    def policy(self, logits):
+        probs = torch.softmax(logits, -1)
         probs = (1 - self.c.exploration) * probs + self.c.exploration / self.n_actions
         return Categorical(probs=probs)
 
@@ -250,23 +388,34 @@ class Learner:
               next_state: State | None, elapsed: int, terminal: bool) -> dict:
         # The only target is a body-derived return; no environment reward argument exists.
         discount = self.c.gamma ** elapsed
-        with torch.no_grad():
-            bootstrap = 0.0 if terminal else float(self.critic(next_state).item())
         with torch.set_grad_enabled(not self.c.no_learn):
-            value = self.critic(state).squeeze()
-            dist = self.distribution(state)
+            critic_output, critic_h, critic_first = self.evaluate("critic", state)
+            logits, actor_h, actor_first = self.evaluate("actor", state)
+            value = critic_output.squeeze()
+            dist = self.policy(logits)
+            with torch.no_grad():
+                if terminal:
+                    bootstrap = 0.0
+                elif self.c.recurrent_size:
+                    bootstrap = self.critic(next_state, critic_h.detach())[0].item()
+                else:
+                    bootstrap = self.critic(next_state).item()
             log_prob = dist.log_prob(torch.tensor([action], device=self.device)).sum()
             entropy = dist.entropy().sum()
             delta = valence + (0.0 if terminal else discount * bootstrap) - value.item()
             metrics = {"td": delta, "value": value.item(), "bootstrap": bootstrap,
                        "entropy": entropy.item(), "max_probability": dist.probs.max().item()}
             if self.c.no_learn:
+                self.advance_memory(state, actor_first, critic_first)
+                if terminal:
+                    self.clear()
                 return metrics
             # Entropy strength vanishes with the TD error, avoiding a constant push
             # back to uniform when bodily advantages are tiny.
             objective = log_prob + self.c.entropy * np.sign(delta) * entropy
             actor_grads = torch.autograd.grad(objective, self.actor_update.parameters)
             critic_grads = torch.autograd.grad(value, self.critic_update.parameters)
+        self.advance_memory(state, actor_first, critic_first)
         # Gradients and target refer to the same pre-update parameter version.
         # Tags refer to decision-start states. Their age since the previous state
         # is the PREVIOUS action duration, especially when the final hold is short.
@@ -281,27 +430,54 @@ class Learner:
             self.clear()
         return metrics
 
+    def advance_memory(self, state, actor_first, critic_first):
+        if not self.c.recurrent_size:
+            return
+        if self.c.no_learn:
+            # Frozen parameters need only the current state, no window recomputation.
+            self.anchors = {"actor": actor_first.detach(), "critic": critic_first.detach()}
+            self.context = [State(state.image.detach(), state.history.detach(),
+                                  state.body.detach(), state.elapsed)]
+            return
+        self.context.append(State(state.image.detach(), state.history.detach(),
+                                  state.body.detach(), state.elapsed))
+        if len(self.context) >= self.c.bptt_steps:
+            self.context.pop(0)
+            self.anchors = {"actor": actor_first.detach(), "critic": critic_first.detach()}
+
     def clear(self):
+        self.context.clear()
+        self.anchors = {"actor": None, "critic": None}
         self.actor_update.clear()
         self.critic_update.clear()
         self.previous_elapsed = None
 
     def save(self, path: Path, specs, step: int):
         atomic_torch_save({"version": 2, "config": asdict(self.c), "step": step,
+                           "recurrent_architecture": "first_fc_v1" if self.c.recurrent_size else None,
                            "specs": [asdict(s) for s in specs],
                            "actor": self.actor.state_dict(),
                            "critic": self.critic.state_dict()}, path)
 
-    def load(self, path: Path, specs):
+    def load(self, path: Path, specs, allow_objective_change: bool = False):
         payload = torch.load(path, map_location=self.device, weights_only=True)
         if payload.get("version") != 2 or payload["specs"] != [asdict(s) for s in specs]:
             raise ValueError("Checkpoint version/action space mismatch (v1 weights are incompatible)")
         for key in ("hp_unit", "gamma", "shaping", "alive", "death_cost", "width",
                     "hold_steps", "memory_steps", "image_size", "exploration"):
+            if key == "gamma" and allow_objective_change:
+                continue
             if payload["config"][key] != getattr(self.c, key):
                 raise ValueError(f"Checkpoint {key}={payload['config'][key]} differs from CLI")
+        if not allow_objective_change and payload["config"].get("energy_delta", 0.0) != self.c.energy_delta:
+            raise ValueError("Checkpoint energy_delta differs from CLI")
         if payload["config"].get("depth", 2) != self.c.depth:
             raise ValueError("Checkpoint depth differs from CLI")
+        for key, default in (("recurrent_size", 0), ("recurrent_tau", 200.0), ("bptt_steps", 8), ("recurrent_layer", 0), ("cnn_extra", 0)):
+            if payload["config"].get(key, default) != getattr(self.c, key):
+                raise ValueError(f"Checkpoint {key} differs from CLI")
+        if self.c.recurrent_size and payload.get("recurrent_architecture") != "first_fc_v1":
+            raise ValueError("Checkpoint recurrent architecture differs: expected first_fc_v1")
         self.actor.load_state_dict(payload["actor"])
         self.critic.load_state_dict(payload["critic"])
         self.clear()
@@ -481,7 +657,10 @@ def parse_args(argv=None):
     defaults = Config()
     for key, default in asdict(defaults).items():
         name = "--" + key.replace("_", "-")
-        if isinstance(default, bool):
+        if key == "recurrent_size":
+            p.add_argument(name, type=int, nargs="?", const=256, default=default,
+                           help="Enable FC1 memory; defaults to 256 units when flag has no value; 0 disables")
+        elif isinstance(default, bool):
             p.add_argument(name, action="store_true", default=default)
         else:
             p.add_argument(name, type=type(default), default=default)
